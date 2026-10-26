@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "graph-creativity"
+version = "0.2.0"
+description = "Симулятор графовой модели повышения креативности предприятия"
+requires-python = ">=3.11"
+dependencies = [
+    "PyYAML>=6.0",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+ui = ["streamlit>=1.40"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+gcm = "graphcreativity.cli:main"
+
+[tool.setuptools]
+packages = ["graphcreativity"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

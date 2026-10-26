@@ -1,0 +1,213 @@
+# Минимальный каркас графовой модели повышения креативности предприятия.
+# Источник: ~/docs/reports/master/model/karkas.tex (v1.2, октябрь 2026).
+#
+# Соглашения:
+#   * все показатели X нормированы: x=0 — базовый уровень, x=1 — целевой;
+#     x>1 — перевыполнение цели, потолок задаётся x_max;
+#   * direction: up  — «больше — лучше» (x растёт вместе с физическим показателем);
+#               down — «меньше — лучше» (x растёт при снижении физического показателя);
+#   * для среды Y значение сценария — отклонение от номинала: Y3 (рыночное
+#     давление) и Y5 (дефицит квалификации) растут в «плохую» сторону;
+#     Y2 (доступность грантов) может отклоняться в любую сторону, сокращение
+#     задаётся отрицательным значением. Это соглашение сохраняет знаки дуг
+#     из karkas.tex: Y5->X3 = -0.35, Y3->X1 = -0.30, Y2->X4 = +0.40;
+#   * cost_mode: one_time — стоимость меры списывается один раз в месяц запуска.
+
+model:
+  version: "1.2-demo"   # версия калибровки; печатается в отчётах
+  horizon: 36          # месяцев
+  dt: 1
+  saturation: ceiling  # ceiling: (x_max - x); strict: (1 - x) как буквально в статье
+  theta: 0.42          # демонстрационный порог; калибруется по протоколу.
+                       # 0.30 — нижняя граница: при ней m1 одна достаточна.
+  mu: 0.01             # деградация, 1/мес
+  x_max: 1.6           # потолок насыщения (приложение А karkas.tex)
+  gain: 1.0            # глобальный множитель всех весов (для сканов)
+  budget_max: 60.0     # млн руб.
+  cost_mode: one_time
+  revenue_mode: percent
+  target_node: X1
+  target_level: 1.0
+
+nodes:
+  X1:
+    kind: indicator
+    label: "Индекс креативной активности"
+    short: "X1 · креативная активность"
+    unit: "ед./год"
+    direction: up
+    base: 100.0
+    target: 125.0      # +25 % за 36 мес.
+    rise: 24
+    theta: 0.42
+    mu: 0.01
+    x_max: 1.6
+    monetization: {r: 0.0, volume: 0.0}
+    position: [7.6, 0.4]
+
+  X2:
+    kind: indicator
+    label: "Доля сотрудников, вовлечённых в программы креативности"
+    short: "X2 · вовлечённость"
+    unit: "%"
+    direction: up
+    base: 20.0
+    target: 35.0
+    rise: 12
+    theta: 0.42
+    mu: 0.01
+    x_max: 1.6
+    monetization: {r: 0.0, volume: 0.0}
+    position: [3.6, 4.4]
+
+  X3:
+    kind: indicator
+    label: "Время от идеи до прототипа"
+    short: "X3 · идея → прототип"
+    unit: "мес."
+    direction: down
+    base: 12.0
+    target: 7.0
+    rise: 18
+    theta: 0.42
+    mu: 0.01
+    x_max: 1.6
+    monetization: {r: 0.0, volume: 0.0}
+    position: [3.6, 1.8]
+
+  X4:
+    kind: indicator
+    label: "Бюджет на НИОКР и креативные подразделения"
+    short: "X4 · бюджет НИОКР"
+    unit: "% выручки"
+    direction: up
+    base: 2.5
+    target: 5.0
+    rise: 18
+    theta: 0.42
+    mu: 0.01
+    x_max: 1.6
+    monetization: {r: 0.0, volume: 0.0}
+    position: [3.6, -1.8]
+
+  X7:
+    kind: indicator
+    label: "Удельные затраты на единицу продукции"
+    short: "X7 · удельные затраты"
+    unit: "руб./ед."
+    direction: down
+    base: 1000.0
+    target: 960.0      # −4 %, верхняя граница 2–4 % из статьи
+    rise: 18
+    theta: 0.42
+    mu: 0.01
+    x_max: 1.6
+    monetization: {r: 1.0, volume: 1000000.0}  # 40 руб./ед. × 1 млн ед. = 40 млн руб./год
+    position: [7.6, -3.4]
+
+  Y2:
+    kind: environment
+    label: "Доступность государственных грантов"
+    short: "Y2 · гранты"
+    unit: "отклонение"
+    direction: up
+    nominal: 0.0
+    position: [11.0, -2.0]
+
+  Y3:
+    kind: environment
+    label: "Рыночное давление (ухудшение конъюнктуры)"
+    short: "Y3 · рынок"
+    unit: "отклонение"
+    direction: down
+    nominal: 0.0
+    position: [11.0, 0.4]
+
+  Y5:
+    kind: environment
+    label: "Дефицит квалификации новых сотрудников"
+    short: "Y5 · квалификация"
+    unit: "отклонение"
+    direction: down
+    nominal: 0.0
+    position: [11.0, 4.0]
+
+  m1:
+    kind: measure
+    label: "«Идеи за 5 минут» — облегчённая подача предложений"
+    short: "m1 · идеи за 5 минут"
+    unit: ""
+    direction: up
+    cost: 3.0          # млн руб., разово
+    owner: "HR / отдел развития персонала"
+    position: [0.0, 4.4]
+
+  m3:
+    kind: measure
+    label: "Корпоративный акселератор / лаборатория"
+    short: "m3 · акселератор"
+    unit: ""
+    direction: up
+    cost: 40.0
+    owner: "R&D / корпоративный акселератор"
+    position: [0.0, 1.0]
+
+  m4:
+    kind: measure
+    label: "Программа патентования с бонусами"
+    short: "m4 · патентование"
+    unit: ""
+    direction: up
+    cost: 10.0
+    owner: "юридическая служба / патентный отдел"
+    position: [0.0, -2.0]
+
+edges:
+  - {from: m1, to: X2, w: 0.60, delay: 1, source: "Л/Э", mechanism: "простая форма подачи снимает барьер участия"}
+  - {from: m1, to: X3, w: 0.35, delay: 3, source: "Э",   mechanism: "быстрый отклик сокращает путь идеи"}
+  - {from: m3, to: X3, w: 0.70, delay: 6, source: "Л",   mechanism: "выделенная команда доводит до прототипа"}
+  - {from: m3, to: X4, w: 0.45, delay: 2, source: "Э",   mechanism: "акселератор требует и перераспределяет бюджет"}
+  - {from: m3, to: X1, w: 0.20, delay: 12, source: "Э",  mechanism: "прямой канал, слабый без патентования"}
+  - {from: m4, to: X1, w: 0.35, delay: 12, source: "Л",  mechanism: "патенты и бонусы дают вклад в индекс"}
+  - {from: X2, to: X1, w: 0.70, delay: 2, source: "Л",   mechanism: "вовлечённость превращается в предложения"}
+  - {from: X3, to: X1, w: 0.55, delay: 3, source: "Э",   mechanism: "скорость доводки даёт внедрённые проекты"}
+  - {from: X4, to: X1, w: 0.40, delay: 6, source: "Л",   mechanism: "ресурс без команды даёт отдачу с лагом"}
+  - {from: X7, to: X1, w: 0.20, delay: 9, source: "Э",   mechanism: "экономия высвобождает ресурс на новые идеи"}
+  - {from: X3, to: X7, w: 0.50, delay: 3, source: "Л",   mechanism: "быстрее прототип — ниже удельные затраты"}
+  - {from: X2, to: X7, w: 0.40, delay: 6, source: "Л",   mechanism: "рацпредложения дают прямую экономию"}
+  - {from: Y3, to: X1, w: -0.30, delay: 0, source: "Э",  mechanism: "неблагоприятный рынок гасит активность"}
+  - {from: Y2, to: X4, w: 0.40, delay: 3, source: "Л",   mechanism: "гранты добавляют бюджет НИОКР"}
+  - {from: Y5, to: X3, w: -0.35, delay: 6, source: "Л",  mechanism: "дефицит квалификации тормозит доводку"}
+  - {from: X1, to: X4, w: 0.25, delay: 9, source: "Э",   mechanism: "успех финансирует НИОКР", optional: true}
+
+plans:
+  P1:
+    label: "P1 · акселератор + патентование"
+    measures: {m3: 0, m4: 0}
+  P2:
+    label: "P2 · идеи за 5 минут"
+    measures: {m1: 0}
+  hybrid:
+    label: "Гибрид · идеи + акселератор (m3 с 3-го мес.)"
+    measures: {m1: 0, m3: 3}
+  full:
+    label: "Все меры"
+    measures: {m1: 0, m3: 0, m4: 0}
+
+scenarios:
+  nominal:
+    label: "Номинальный"
+    values: {}
+  market_downturn:
+    label: "Рынок: ухудшение"
+    values: {Y3: 0.5}
+  low_qualification:
+    label: "Квалификация: дефицит"
+    values: {Y5: 0.5}
+  grant_cut:
+    label: "Гранты: сокращение"
+    values: {Y2: -0.4}
+  combined_stress:
+    label: "Комбинированный стресс"
+    atomic: false       # это уже сумма событий, не отдельное событие
+    values: {Y2: -0.4, Y3: 0.5, Y5: 0.5}
