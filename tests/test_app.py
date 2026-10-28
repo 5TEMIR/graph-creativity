@@ -8,7 +8,9 @@ APP = Path(__file__).resolve().parent.parent / "app.py"
 def test_streamlit_app_runs_without_exceptions():
     at = AppTest.from_file(str(APP), default_timeout=90).run()
     assert not at.exception, [str(exc) for exc in at.exception]
-    assert at.title
+    titles = [title.value for title in at.title]
+    assert "🕸️ Графовая модель" in titles
+    assert not any(radio.label == "Режим" for radio in at.radio)
     labels = [metric.label for metric in at.metric]
     assert "k = R / C" in labels
 

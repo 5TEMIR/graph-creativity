@@ -1,7 +1,7 @@
-"""Streamlit-приложение: песочница для графовой модели креативности.
+"""Streamlit-приложение: графовая модель креативности.
 
-Два режима: ЛПР (анкета, бюджет, рекомендация) и исследователь
-(все подмножества, σ₁, редактирование графа).
+Интерфейс исследователя: все подмножества мер, σ₁, сценарии,
+чувствительность и редактирование графа.
 
 Запуск:
     .venv/bin/streamlit run app.py
@@ -100,16 +100,8 @@ default_config_index = next(
 )
 
 with st.sidebar:
-    st.title("🕸️ Песочница")
-    st.caption("Графовая модель повышения креативности предприятия")
-    mode = st.radio(
-        "Режим",
-        ["ЛПР", "Исследователь"],
-        index=0,
-        horizontal=True,
-        help="ЛПР: анкета, бюджет и рекомендация. Исследователь: все подмножества, "
-        "σ₁, редактирование графа и отладочные параметры.",
-    )
+    st.title("🕸️ Графовая модель")
+    st.caption("Повышение креативности предприятия")
     config_path = st.selectbox(
         "Конфиг",
         configs,
@@ -153,80 +145,6 @@ with st.sidebar:
             f"Граф: {len(model.nodes)} вершин, {len(model.edges)} дуг. "
             "Редактирование — на вкладке «Граф»."
         )
-
-    if mode == "ЛПР":
-        with st.expander("Анкета предприятия", expanded=False):
-            st.caption(
-                "Замените демонстрационные числа на данные предприятия. "
-                "База и цель — в физических единицах; для X3 и X7 «лучше» "
-                "означает ниже, поэтому цель меньше базы. Цель X1 — цель "
-                "предприятия; цели X2/X4/X7 — вспомогательные ориентиры "
-                "нормировки, их можно оставить демонстрационными и проверить "
-                "в чувствительности."
-            )
-            indicator_ids = ["X1", "X2", "X3", "X4", "X7"]
-            sheet = pd.DataFrame(
-                [
-                    {
-                        "Код": node_id,
-                        "Показатель": model.node(node_id).label,
-                        "База": float(model.node(node_id).base),
-                        "Цель": float(model.node(node_id).target),
-                        "Ед.": model.node(node_id).unit,
-                    }
-                    for node_id in indicator_ids
-                ]
-            )
-            with st.form("enterprise_form"):
-                edited = st.data_editor(
-                    sheet,
-                    hide_index=True,
-                    disabled=["Код", "Показатель", "Ед."],
-                    column_config={
-                        "База": st.column_config.NumberColumn(format="%.2f"),
-                        "Цель": st.column_config.NumberColumn(format="%.2f"),
-                    },
-                    key="enterprise_sheet",
-                )
-                st.markdown("**Сметы мер, млн руб.**")
-                cost_cols = st.columns(3)
-                m1_cost = cost_cols[0].number_input(
-                    "m1 · идеи",
-                    min_value=0.0,
-                    value=float(model.node("m1").cost),
-                    step=1.0,
-                )
-                m3_cost = cost_cols[1].number_input(
-                    "m3 · акселератор",
-                    min_value=0.0,
-                    value=float(model.node("m3").cost),
-                    step=1.0,
-                )
-                m4_cost = cost_cols[2].number_input(
-                    "m4 · патенты",
-                    min_value=0.0,
-                    value=float(model.node("m4").cost),
-                    step=1.0,
-                )
-                submitted = st.form_submit_button("Применить данные")
-
-            if submitted:
-                updates: dict[str, dict[str, float]] = {}
-                for _, row in edited.iterrows():
-                    updates[str(row["Код"])] = {
-                        "base": float(row["База"]),
-                        "target": float(row["Цель"]),
-                    }
-                updates["m1"] = {"cost": float(m1_cost)}
-                updates["m3"] = {"cost": float(m3_cost)}
-                updates["m4"] = {"cost": float(m4_cost)}
-                rows = [dict(row) for row in st.session_state.node_rows]
-                for row in rows:
-                    if row["id"] in updates:
-                        row.update(updates[row["id"]])
-                st.session_state.node_rows = rows
-                st.session_state.enterprise_flash = "Данные предприятия применены."
-                st.rerun()
 
     st.divider()
     st.subheader("Сценарий")
@@ -312,59 +230,51 @@ with st.sidebar:
         help="Жёсткое ограничение на суммарную стоимость мер.",
     )
 
-    if mode == "Исследователь":
-        mu = st.slider(
-            "Деградация μ, 1/мес.",
-            min_value=0.0,
-            max_value=0.05,
-            value=float(model.params.mu),
-            step=0.001,
-            format="%.3f",
-        )
-        x_max = st.slider(
-            "Потолок x_max",
-            min_value=1.0,
-            max_value=2.0,
-            value=float(model.params.x_max),
-            step=0.05,
-            help="1.6 — верхняя граница эффекта P1 из статьи (40 % при цели 25 %).",
-        )
-        gain = st.slider(
-            "Множитель весов",
-            min_value=0.5,
-            max_value=1.5,
-            value=float(model.params.gain),
-            step=0.05,
-            help="Глобальный gain для всех дуг: удобно для сканирования чувствительности.",
-        )
-        saturation = st.radio(
-            "Режим насыщения",
-            ["ceiling", "strict"],
-            format_func=lambda s: "ceiling: x_max − x (рабочий)"
-            if s == "ceiling"
-            else "strict: 1 − x (исторический)",
-            horizontal=False,
-        )
-        include_optional = st.checkbox(
-            "Включить обратную связь X1 → X4",
-            value=False,
-            help="Опциональная дуга 16: успех финансирует НИОКР.",
-        )
-        revenue_mode = st.radio(
-            "Эффект R",
-            ["percent", "rubles"],
-            format_func=lambda m: "проценты прироста X1"
-            if m == "percent"
-            else "рубли через X7 (частичная оценка)",
-            horizontal=False,
-        )
-    else:
-        mu = float(model.params.mu)
-        x_max = float(model.params.x_max)
-        gain = float(model.params.gain)
-        saturation = str(model.params.saturation)
-        include_optional = False
-        revenue_mode = str(model.params.revenue_mode)
+    mu = st.slider(
+        "Деградация μ, 1/мес.",
+        min_value=0.0,
+        max_value=0.05,
+        value=float(model.params.mu),
+        step=0.001,
+        format="%.3f",
+    )
+    x_max = st.slider(
+        "Потолок x_max",
+        min_value=1.0,
+        max_value=2.0,
+        value=float(model.params.x_max),
+        step=0.05,
+        help="1.6 — верхняя граница эффекта P1 из статьи (40 % при цели 25 %).",
+    )
+    gain = st.slider(
+        "Множитель весов",
+        min_value=0.5,
+        max_value=1.5,
+        value=float(model.params.gain),
+        step=0.05,
+        help="Глобальный gain для всех дуг: удобно для сканирования чувствительности.",
+    )
+    saturation = st.radio(
+        "Режим насыщения",
+        ["ceiling", "strict"],
+        format_func=lambda s: "ceiling: x_max − x (рабочий)"
+        if s == "ceiling"
+        else "strict: 1 − x (исторический)",
+        horizontal=False,
+    )
+    include_optional = st.checkbox(
+        "Включить обратную связь X1 → X4",
+        value=False,
+        help="Опциональная дуга 16: успех финансирует НИОКР.",
+    )
+    revenue_mode = st.radio(
+        "Эффект R",
+        ["percent", "rubles"],
+        format_func=lambda m: "проценты прироста X1"
+        if m == "percent"
+        else "рубли через X7 (частичная оценка)",
+        horizontal=False,
+    )
 
     with st.expander("Как читать модель"):
         st.markdown(
@@ -379,8 +289,8 @@ $$
 $\lambda_i=\ln 10/\tau_i^{rise}$. Меры — ступеньки $u_j(t)$,
 среда — отклонение сценария от номинала.
 
-$R$ в режиме ЛПР считается в процентах прироста $X_1$; рублёвый режим
-монетизирует только $X_7$ и поэтому не используется для сравнения планов.
+При режиме «проценты» $R$ — прирост $X_1$; режим «рубли» монетизирует
+только $X_7$, поэтому для сравнения планов используется процентный режим.
 """
         )
 
@@ -398,10 +308,6 @@ options = SimOptions(
 
 result = simulate(model, plan, scenario, options)
 summary = summarize(result)
-
-enterprise_flash = st.session_state.pop("enterprise_flash", None)
-if enterprise_flash:
-    st.success(enterprise_flash)
 
 # ---------------------------------------------------------------------------
 # Заголовок и KPI
@@ -444,19 +350,11 @@ c3.metric(
 
 c4, c5, c6 = st.columns(3)
 c4.metric("Затраты, млн руб.", f"{summary['cost_total']:.1f}")
-if mode == "ЛПР":
-    c5.metric(
-        "Бюджет, млн руб.",
-        f"{options.budget_max:.0f}",
-        delta="ок" if summary["feasible"] else "превышен",
-        delta_color="normal" if summary["feasible"] else "inverse",
-    )
-else:
-    c5.metric(
-        "σ₁ (§5, статика)",
-        f"{effect_strength(model, plan.measures):.2f}",
-        help="Сумма путей длины ≤ 2 от мер к X1 — величина из первого столбца §5.",
-    )
+c5.metric(
+    "σ₁ (§5, статика)",
+    f"{effect_strength(model, plan.measures):.2f}",
+    help="Сумма путей длины ≤ 2 от мер к X1 — величина из первого столбца §5.",
+)
 c6.metric(
     "Меры в плане",
     f"{len(plan.measures)} / {len(model.measure_ids)}"
@@ -464,12 +362,6 @@ c6.metric(
     else "—",
     help=", ".join(model.node(m).short or m for m in plan.measures) or "план без мер",
 )
-if mode == "ЛПР":
-    st.caption(
-        "KPI относятся к выбранному плану; блок «Рекомендация» ниже "
-        "сравнивает все именованные планы с их собственными стартами."
-    )
-
 if not summary["feasible"]:
     st.error(
         "План превышает бюджет: "
@@ -480,119 +372,10 @@ for warning in summary.get("warnings", []):
         st.warning(warning)
 
 # ---------------------------------------------------------------------------
-# Режим ЛПР: рекомендация, а не набор отладочных метрик
+# Именованные планы
 # ---------------------------------------------------------------------------
 
 named_rows = compare_named_plans(model, scenario, options)
-
-if mode == "ЛПР":
-    st.divider()
-    st.subheader("Рекомендация")
-    st.caption(
-        f"Сценарий: {scenario.label}. Сравниваются именованные планы с их "
-        "собственными стартами; устойчивость проверяется по всем сценариям."
-    )
-    candidates = [row for row in named_rows if row["reached"] and row["feasible"]]
-    priority = st.radio(
-        "Приоритет выбора",
-        ["эффект/затраты", "время", "стоимость"],
-        horizontal=True,
-        help="По умолчанию максимизируется k = R/C; время и стоимость — "
-        "альтернативные правила для ЛПР.",
-    )
-    if not candidates:
-        st.warning(
-            "Ни один именованный план не достигает цели в рамках бюджета. "
-            "Увеличьте бюджет, горизонт или переключитесь в режим «Исследователь»."
-        )
-    else:
-        if priority == "эффект/затраты":
-            best = max(
-                candidates,
-                key=lambda row: (
-                    row["k_T"] or 0.0,
-                    -row["t_goal"],
-                    -row["cost_total"],
-                ),
-            )
-        elif priority == "время":
-            best = min(
-                candidates,
-                key=lambda row: (row["t_goal"], row["cost_total"]),
-            )
-        else:
-            best = min(
-                candidates,
-                key=lambda row: (row["cost_total"], row["t_goal"]),
-            )
-        robustness = scenario_robustness(model, best["plan"], options=options)
-        best_plan = model.plan(best["plan"])
-        owners = [
-            f"{model.node(measure).short or measure} — "
-            f"{model.node(measure).owner or 'ответственный не задан'}"
-            for measure in best_plan.measures
-        ]
-        starts = [
-            f"{model.node(measure).short or measure}: старт {program.start:g} мес."
-            for measure, program in best_plan.programs.items()
-        ]
-
-        left, right = st.columns([2, 1])
-        with left:
-            st.markdown(f"### {best['plan_label']}")
-            k_text = (
-                f"$k = R/C$ = **{best['k_T']:.2f}**"
-                if best["k_T"] is not None
-                else "$k$ не определён (C = 0)"
-            )
-            st.write(
-                f"Цель достигается к **{best['t_goal']:g} мес.**, "
-                f"стоимость **{best['cost_total']:.1f} млн руб.**, {k_text}."
-            )
-            st.write("**Кому:** " + "; ".join(owners))
-            st.caption("**Когда:** " + "; ".join(starts))
-            st.caption(
-                "Правило выбора: цель достигнута, бюджет соблюдён, затем — "
-                f"приоритет «{priority}»."
-            )
-        with right:
-            st.metric(
-                "Устойчивость",
-                f"{robustness['radius']} / {len(model.atomic_scenarios)}",
-                help="Сколько одновременных неблагоприятных событий выдерживает план.",
-            )
-            st.metric(
-                "Сценарии с целью",
-                f"{robustness['success_share'] * 100:.0f} %",
-                help="Доля сценариев, где цель достигнута и бюджет соблюдён.",
-            )
-            st.metric(
-                "Худший запас x1(T) − 1",
-                f"{robustness['min_margin']:+.2f}",
-            )
-
-        alt = pd.DataFrame(
-            [
-                {
-                    "План": row["plan_label"],
-                    "T_goal, мес.": num(row["t_goal"], 0),
-                    "C, млн": num(row["cost_total"], 1),
-                    "k": num(row["k_T"], 2),
-                    "Цель": "да" if row["reached"] else "нет",
-                    "Бюджет": "ок" if row["feasible"] else "превышен",
-                }
-                for row in sorted(
-                    named_rows,
-                    key=lambda row: (
-                        not (row["reached"] and row["feasible"]),
-                        row["t_goal"] if row["t_goal"] is not None else 10**9,
-                        row["cost_total"],
-                    ),
-                )
-            ]
-        )
-        st.caption("Именованные планы с их собственными стартами:")
-        st.dataframe(alt, width="stretch", hide_index=True)
 
 # ---------------------------------------------------------------------------
 # Вкладки
@@ -601,10 +384,10 @@ if mode == "ЛПР":
 tab_dynamics, tab_indicators, tab_compare, tab_scenarios, tab_graph, tab_data = st.tabs(
     [
         "Динамика",
-        "Показатели" if mode == "Исследователь" else "Показатели (иссл.)",
+        "Показатели",
         "Сравнение планов",
         "Сценарии",
-        "Граф" if mode == "Исследователь" else "Граф (иссл.)",
+        "Граф",
         "Данные",
     ]
 )
@@ -874,11 +657,6 @@ with tab_graph:
             st.success(flash)
 
     st.subheader("Граф: просмотр и редактирование")
-    if mode == "ЛПР":
-        st.info(
-            "Это исследовательский раздел. Для решения используйте верхний блок "
-            "«Рекомендация»; редактирование графа меняет расчётную модель."
-        )
     if graph_error:
         st.error("Граф не применён к расчётам:\n\n" + graph_error)
         st.caption(
