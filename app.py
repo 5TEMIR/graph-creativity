@@ -1,6 +1,6 @@
 """Streamlit-приложение: графовая модель креативности.
 
-Интерфейс исследователя: все подмножества мер, σ₁, чувствительность
+Интерфейс исследователя: все подмножества мер, чувствительность
 и редактирование графа. Основной расчёт идёт по базовой среде.
 
 Запуск:
@@ -34,7 +34,6 @@ from graphcreativity.metrics import (
     compare_named_plans,
     compare_plans,
     critical_removal_sets,
-    effect_strength,
     minimal_sufficient_sets,
     pareto_front,
     summarize,
@@ -661,20 +660,6 @@ with st.sidebar:
         else "strict: 1 − x (исторический)",
         horizontal=False,
     )
-    include_optional = st.checkbox(
-        "Включить обратную связь X1 → X4",
-        value=False,
-        help="Опциональная дуга 16: успех финансирует НИОКР.",
-    )
-    revenue_mode = st.radio(
-        "Эффект R",
-        ["percent", "rubles"],
-        format_func=lambda m: "проценты прироста X1"
-        if m == "percent"
-        else "рубли через X7 (частичная оценка)",
-        horizontal=False,
-    )
-
     with st.expander("Как читать модель"):
         st.markdown(
             r"""
@@ -688,8 +673,8 @@ $$
 $\lambda_i=\ln 10/\tau_i^{rise}$. Меры — ступеньки $u_j(t)$,
 среда — отклонение от номинала.
 
-При режиме «проценты» $R$ — прирост $X_1$; режим «рубли» монетизирует
-только $X_7$, поэтому для сравнения планов используется процентный режим.
+$R$ — прирост $X_1$ в процентах к базе:
+$R_{\%}(t)=100\cdot x_1(t)\cdot|target_1-base_1|/base_1$.
 """
         )
 
@@ -709,8 +694,8 @@ options = SimOptions(
     gain=gain,
     budget_max=budget_max,
     saturation=saturation,
-    include_optional=include_optional,
-    revenue_mode=revenue_mode,
+    include_optional=False,
+    revenue_mode="percent",
 )
 
 result = simulate(model, plan, scenario, options)
@@ -758,14 +743,9 @@ c3.metric(
     ),
 )
 
-c4, c5, c6 = st.columns(3)
+c4, c5 = st.columns(2)
 c4.metric("Затраты, млн руб.", f"{summary['cost_total']:.1f}")
 c5.metric(
-    "σ₁ (§5, статика)",
-    f"{effect_strength(model, plan.measures):.2f}",
-    help="Сумма путей длины ≤ 2 от мер к X1 — величина из первого столбца §5.",
-)
-c6.metric(
     "Меры в комплексе",
     f"{len(plan.measures)} / {len(model.measure_ids)}"
     if model.measure_ids
@@ -954,13 +934,7 @@ with tab_graph:
             "Исправьте параметры в карточках ниже."
         )
 
-    show_fig(
-        plot_graph(
-            model,
-            active_measures=plan.measures,
-            include_optional=include_optional,
-        )
-    )
+    show_fig(plot_graph(model, active_measures=plan.measures))
     st.caption(
         "Толщина дуги — |w|, синий — положительное влияние, красный — отрицательное. "
         "Зелёная обводка — меры, включённые в активный комплекс."

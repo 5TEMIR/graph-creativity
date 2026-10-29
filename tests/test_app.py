@@ -14,6 +14,12 @@ def test_streamlit_app_runs_without_exceptions():
     labels = [metric.label for metric in at.metric]
     assert "k = R / C" in labels
     assert "Меры в комплексе" in labels
+    assert "σ₁ (§5, статика)" not in labels
+    assert not any(
+        checkbox.label == "Включить обратную связь X1 → X4"
+        for checkbox in at.checkbox
+    )
+    assert not any(radio.label == "Эффект R" for radio in at.radio)
     tab_labels = [tab.label for tab in at.tabs]
     assert tab_labels == [
         "Динамика",
