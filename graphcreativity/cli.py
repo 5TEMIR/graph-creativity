@@ -322,7 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", default=str(DEFAULT_CONFIG), help="путь к YAML-конфигу")
     common.add_argument("--scenario", default="nominal", help="имя сценария")
-    common.add_argument("--horizon", type=int, help="горизонт, мес.")
+    common.add_argument("--horizon", type=int, help="период моделирования, мес.")
     common.add_argument("--theta", type=float, help="порог срабатывания")
     common.add_argument("--mu", type=float, help="деградация, 1/мес")
     common.add_argument("--x-max", type=float, dest="x_max", help="потолок насыщения")

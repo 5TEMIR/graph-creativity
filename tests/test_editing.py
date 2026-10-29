@@ -11,7 +11,9 @@ from graphcreativity.editing import (
     model_to_yaml,
     new_node_row,
     node_rows,
+    plan_rows,
     save_model_yaml,
+    scenario_rows,
     suggest_node_id,
     validate_new_node_id,
 )
@@ -90,6 +92,62 @@ def test_model_without_measures_still_simulates(model):
     fig = plot_dynamics(result)
     assert fig is not None
     plt.close(fig)
+
+
+def test_edit_plan_programs_and_scenario_values(model):
+    plans = plan_rows(model)
+    plans["hybrid"]["m1"].update(
+        {"start": 6.0, "duration": 12.0, "intensity": 0.5}
+    )
+    plans["hybrid"].pop("m3")
+
+    scenarios = scenario_rows(model)
+    scenarios["nominal"]["Y3"] = -0.25
+    scenarios["nominal"]["Y2"] = 0.30
+
+    edited = build_model(
+        model,
+        node_rows(model),
+        edge_rows(model),
+        plans,
+        scenarios,
+    )
+
+    program = edited.plans["hybrid"].programs["m1"]
+    assert program.start == pytest.approx(6.0)
+    assert program.duration == pytest.approx(12.0)
+    assert program.intensity == pytest.approx(0.5)
+    assert "m3" not in edited.plans["hybrid"].programs
+    assert edited.scenarios["nominal"].values["Y3"] == pytest.approx(-0.25)
+    assert edited.scenarios["nominal"].values["Y2"] == pytest.approx(0.30)
+
+    # Возвращённые строки не должны быть ссылками на объекты исходной модели.
+    plans["hybrid"]["m1"]["start"] = 99.0
+    assert model.plans["hybrid"].programs["m1"].start != pytest.approx(99.0)
+
+
+def test_new_environment_is_zero_in_all_scenarios(model):
+    scenarios = scenario_rows(model)
+    scenarios["nominal"]["Y6"] = 0.0
+    edited = build_model(
+        model,
+        node_rows(model),
+        edge_rows(model),
+        plan_rows(model),
+        scenarios,
+    )
+    assert "Y6" not in edited.scenarios["nominal"].values
+
+    row = new_node_row(model, "Y6", "environment", label="Новый фактор")
+    edited = build_model(
+        model,
+        node_rows(model) + [row],
+        edge_rows(model),
+        plan_rows(model),
+        scenarios,
+    )
+    assert edited.scenarios["nominal"].values["Y6"] == pytest.approx(0.0)
+    assert edited.scenarios["grant_cut"].values["Y6"] == pytest.approx(0.0)
 
 
 def test_edit_edge_weight_changes_dynamics(model):

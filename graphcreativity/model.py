@@ -84,7 +84,7 @@ class MeasureProgram:
     """Расписание одной меры.
 
     u_j(t) = intensity, если start <= t < end, иначе 0.
-    duration=None означает «до конца горизонта».
+    duration=None означает «до конца периода моделирования».
     """
 
     start: float = 0.0

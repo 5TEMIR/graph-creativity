@@ -15,6 +15,60 @@ def test_streamlit_app_runs_without_exceptions():
     assert "k = R / C" in labels
 
 
+def test_vertex_spaces_open_measure_and_environment_dialogs():
+    at = AppTest.from_file(str(APP), default_timeout=90).run()
+    assert not at.exception
+
+    space = next(
+        radio for radio in at.radio if radio.label == "Пространство вершин"
+    )
+    assert space.options == ["Показатели X", "Меры M", "Среда Y"]
+
+    space.set_value("Меры M").run()
+    next(button for button in at.button if button.label == "Изменить").click().run()
+
+    assert not at.exception
+    assert any(field.label == "Название" for field in at.text_input)
+    assert any(slider.label == "Начало, мес." for slider in at.slider)
+    assert any(slider.label == "Интенсивность" for slider in at.slider)
+    assert any(
+        field.label == "Продолжительность, мес."
+        for field in at.number_input
+    )
+
+    at = AppTest.from_file(str(APP), default_timeout=90).run()
+    space = next(
+        radio for radio in at.radio if radio.label == "Пространство вершин"
+    )
+    space.set_value("Среда Y").run()
+    next(button for button in at.button if button.label == "Изменить").click().run()
+
+    assert not at.exception
+    assert any(
+        slider.label == "Отклонение от номинала" for slider in at.slider
+    )
+
+
+def test_custom_plan_exposes_measure_schedule_controls():
+    at = AppTest.from_file(str(APP), default_timeout=90).run()
+    assert not at.exception
+
+    plan = next(field for field in at.selectbox if field.label == "Комплекс мер")
+    plan.set_value("__custom__").run()
+
+    assert not at.exception
+    assert any(slider.label == "Старт m1, мес." for slider in at.slider)
+    assert any(slider.label == "Интенсивность m1" for slider in at.slider)
+    assert any(
+        field.label == "Продолжительность m1, мес."
+        for field in at.number_input
+    )
+    assert any(
+        checkbox.label == "m1: до конца периода"
+        for checkbox in at.checkbox
+    )
+
+
 def test_graph_editor_applies_and_resets_edge_weight():
     at = AppTest.from_file(str(APP), default_timeout=90).run()
     assert not at.exception

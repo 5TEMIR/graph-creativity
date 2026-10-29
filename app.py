@@ -19,13 +19,14 @@ import streamlit as st
 from graphcreativity.editing import (
     EDGE_FIELDS,
     KIND_LABELS,
-    NODE_FIELDS,
     build_model,
     edge_rows,
     model_to_yaml,
     new_node_row,
     node_rows,
+    plan_rows,
     save_model_yaml,
+    scenario_rows,
     suggest_node_id,
     validate_new_node_id,
 )
@@ -83,6 +84,258 @@ def num(value, digits: int = 2) -> str:
     return "—" if value is None else f"{value:.{digits}f}"
 
 
+def _row_by_id(node_id: str) -> dict | None:
+    return next(
+        (
+            row
+            for row in st.session_state.get("node_rows", [])
+            if str(row.get("id", "")).strip() == node_id
+        ),
+        None,
+    )
+
+
+def _finish_graph_edit(message: str) -> None:
+    st.session_state.graph_epoch += 1
+    st.session_state.graph_flash = message
+    st.rerun()
+
+
+@st.dialog("Показатель")
+def edit_indicator_dialog(node_id: str, epoch: int) -> None:
+    row = _row_by_id(node_id)
+    if row is None:
+        st.error(f"Вершина {node_id} не найдена.")
+        return
+
+    with st.form(f"indicator_dialog_{node_id}_{epoch}"):
+        st.caption(f"ID: `{node_id}` · тип: показатель X")
+        label = st.text_input("Название", value=str(row.get("label") or ""))
+        c_short, c_unit = st.columns(2)
+        short = c_short.text_input("Короткое имя", value=str(row.get("short") or ""))
+        unit = c_unit.text_input("Единица измерения", value=str(row.get("unit") or ""))
+        direction = st.selectbox(
+            "Направление",
+            ["up", "down"],
+            index=0 if str(row.get("direction", "up")) == "up" else 1,
+            format_func=lambda d: "up — больше лучше" if d == "up" else "down — меньше лучше",
+        )
+        c_base, c_target, c_rise = st.columns(3)
+        base = c_base.number_input(
+            "База", value=float(row.get("base") or 0.0), format="%.2f"
+        )
+        target = c_target.number_input(
+            "Цель", value=float(row.get("target") or 0.0), format="%.2f"
+        )
+        rise = c_rise.number_input(
+            "rise, мес.",
+            value=float(row.get("rise") or 0.0),
+            min_value=0.0,
+            step=1.0,
+            help="Время до плато; 0 — оставить автоматический расчёт по умолчанию.",
+        )
+        with st.expander("Положение на графе"):
+            c_x, c_y = st.columns(2)
+            x = c_x.number_input(
+                "x", value=float(row.get("x") or 0.0), step=1.0
+            )
+            y = c_y.number_input(
+                "y", value=float(row.get("y") or 0.0), step=1.0
+            )
+
+        if st.form_submit_button("Сохранить", type="primary"):
+            row.update(
+                {
+                    "label": label.strip() or node_id,
+                    "short": short.strip() or label.strip() or node_id,
+                    "unit": unit.strip(),
+                    "direction": direction,
+                    "base": float(base),
+                    "target": float(target),
+                    "rise": float(rise),
+                    "x": float(x),
+                    "y": float(y),
+                }
+            )
+            _finish_graph_edit(f"Показатель {node_id} обновлён.")
+
+
+@st.dialog("Мера")
+def edit_measure_dialog(
+    node_id: str,
+    plan_name: str,
+    plan_label: str,
+    epoch: int,
+    horizon: int,
+) -> None:
+    row = _row_by_id(node_id)
+    if row is None:
+        st.error(f"Вершина {node_id} не найдена.")
+        return
+
+    plan_data = st.session_state.plan_rows.setdefault(plan_name, {})
+    program = plan_data.get(node_id)
+    included = isinstance(program, dict)
+    start = round(float(program.get("start", 0))) if included else 0
+    intensity = float(program.get("intensity", 1.0)) if included else 1.0
+    duration = program.get("duration") if included else None
+    until_end = duration is None
+    duration_value = round(float(duration)) if duration is not None else horizon
+
+    with st.form(f"measure_dialog_{node_id}_{plan_name}_{epoch}"):
+        st.caption(f"ID: `{node_id}` · мера M · план: {plan_label}")
+        label = st.text_input("Название", value=str(row.get("label") or ""))
+        c_short, c_unit = st.columns(2)
+        short = c_short.text_input("Короткое имя", value=str(row.get("short") or ""))
+        unit = c_unit.text_input("Единица измерения", value=str(row.get("unit") or ""))
+        c_cost, c_owner = st.columns(2)
+        cost = c_cost.number_input(
+            "Стоимость, млн руб.",
+            value=float(row.get("cost") or 0.0),
+            min_value=0.0,
+            step=1.0,
+        )
+        owner = c_owner.text_input(
+            "Ответственный", value=str(row.get("owner") or "")
+        )
+
+        widget_suffix = f"{node_id}_{plan_name}_{epoch}_{horizon}"
+        include = st.checkbox(
+            f"Входит в план «{plan_label}»",
+            value=included,
+            key=f"measure_include_{widget_suffix}",
+            help="Можно включать и исключать меру для выбранного плана.",
+        )
+        start_value = st.slider(
+            "Начало, мес.",
+            min_value=0,
+            max_value=max(1, horizon),
+            value=min(max(start, 0), max(1, horizon)),
+            step=1,
+            key=f"measure_start_{widget_suffix}",
+        )
+        intensity_value = st.slider(
+            "Интенсивность",
+            min_value=0.0,
+            max_value=1.0,
+            value=min(max(intensity, 0.0), 1.0),
+            step=0.05,
+            key=f"measure_intensity_{widget_suffix}",
+            help="Доля полного объёма меры: 1.0 — полный объём.",
+        )
+        until_end_value = st.checkbox(
+            "Действует до конца периода",
+            value=until_end,
+            key=f"measure_until_end_{widget_suffix}",
+        )
+        duration_input = st.number_input(
+            "Продолжительность, мес.",
+            min_value=1.0,
+            max_value=float(max(1, horizon)),
+            value=float(min(max(duration_value, 1), max(1, horizon))),
+            step=1.0,
+            key=f"measure_duration_{widget_suffix}",
+            help="Не используется, если мера действует до конца периода.",
+        )
+        with st.expander("Положение на графе"):
+            c_x, c_y = st.columns(2)
+            x = c_x.number_input(
+                "x", value=float(row.get("x") or 0.0), step=1.0
+            )
+            y = c_y.number_input(
+                "y", value=float(row.get("y") or 0.0), step=1.0
+            )
+
+        if st.form_submit_button("Сохранить", type="primary"):
+            row.update(
+                {
+                    "label": label.strip() or node_id,
+                    "short": short.strip() or label.strip() or node_id,
+                    "unit": unit.strip(),
+                    "cost": float(cost),
+                    "owner": owner.strip(),
+                    "x": float(x),
+                    "y": float(y),
+                }
+            )
+            if include:
+                plan_data[node_id] = {
+                    "start": float(start_value),
+                    "duration": None if until_end_value else float(duration_input),
+                    "intensity": float(intensity_value),
+                }
+            else:
+                plan_data.pop(node_id, None)
+            st.session_state.plan_rows[plan_name] = plan_data
+            _finish_graph_edit(f"Мера {node_id} обновлена для плана «{plan_label}».")
+
+
+@st.dialog("Фактор среды")
+def edit_environment_dialog(
+    node_id: str,
+    scenario_name: str,
+    scenario_label: str,
+    epoch: int,
+) -> None:
+    row = _row_by_id(node_id)
+    if row is None:
+        st.error(f"Вершина {node_id} не найдена.")
+        return
+
+    values = st.session_state.scenario_rows.setdefault(scenario_name, {})
+    current = float(values.get(node_id, 0.0))
+
+    with st.form(f"environment_dialog_{node_id}_{scenario_name}_{epoch}"):
+        st.caption(f"ID: `{node_id}` · фактор среды Y · сценарий: {scenario_label}")
+        label = st.text_input("Название", value=str(row.get("label") or ""))
+        c_short, c_unit = st.columns(2)
+        short = c_short.text_input("Короткое имя", value=str(row.get("short") or ""))
+        unit = c_unit.text_input("Единица измерения", value=str(row.get("unit") or ""))
+        direction = st.selectbox(
+            "Направление",
+            ["up", "down"],
+            index=0 if str(row.get("direction", "up")) == "up" else 1,
+            format_func=lambda d: "up — больше лучше" if d == "up" else "down — меньше лучше",
+            help="Для факторов среды направление справочное и не влияет на σ.",
+        )
+        low = min(-1.0, current)
+        high = max(1.0, current)
+        deviation = st.slider(
+            "Отклонение от номинала",
+            min_value=low,
+            max_value=high,
+            value=min(max(current, low), high),
+            step=0.05,
+            key=f"environment_deviation_{node_id}_{scenario_name}_{epoch}",
+            help="Безразмерное отклонение: 0 — номинал, отрицательное — неблагоприятное.",
+        )
+        with st.expander("Положение на графе"):
+            c_x, c_y = st.columns(2)
+            x = c_x.number_input(
+                "x", value=float(row.get("x") or 0.0), step=1.0
+            )
+            y = c_y.number_input(
+                "y", value=float(row.get("y") or 0.0), step=1.0
+            )
+
+        if st.form_submit_button("Сохранить", type="primary"):
+            row.update(
+                {
+                    "label": label.strip() or node_id,
+                    "short": short.strip() or label.strip() or node_id,
+                    "unit": unit.strip(),
+                    "direction": direction,
+                    "x": float(x),
+                    "y": float(y),
+                }
+            )
+            values[node_id] = float(deviation)
+            st.session_state.scenario_rows[scenario_name] = values
+            _finish_graph_edit(
+                f"Фактор {node_id} обновлён для сценария «{scenario_label}»."
+            )
+
+
 # ---------------------------------------------------------------------------
 # Загрузка модели
 # ---------------------------------------------------------------------------
@@ -121,13 +374,21 @@ with st.sidebar:
         st.session_state.graph_epoch = st.session_state.get("graph_epoch", 0) + 1
         st.session_state.node_rows = node_rows(base_model)
         st.session_state.edge_rows = edge_rows(base_model)
+        st.session_state.plan_rows = plan_rows(base_model)
+        st.session_state.scenario_rows = scenario_rows(base_model)
         st.session_state.last_valid_model = base_model
+
+    # Совместимость с сессией, открытой до появления редакторов планов.
+    st.session_state.setdefault("plan_rows", plan_rows(base_model))
+    st.session_state.setdefault("scenario_rows", scenario_rows(base_model))
 
     try:
         model = build_model(
             base_model,
             st.session_state.node_rows,
             st.session_state.edge_rows,
+            st.session_state.plan_rows,
+            st.session_state.scenario_rows,
         )
         st.session_state.last_valid_model = model
         graph_error: str | None = None
@@ -158,7 +419,7 @@ with st.sidebar:
     st.divider()
     st.subheader("План мероприятий")
     horizon = st.slider(
-        "Горизонт, мес.",
+        "Период моделирования, мес.",
         min_value=12,
         max_value=60,
         value=int(model.params.horizon),
@@ -184,23 +445,49 @@ with st.sidebar:
         )
         # После удаления меры из графа виджет может ещё хранить старый ID.
         selected = [measure for measure in selected if measure in model.measure_ids]
-        starts: dict[str, float] = {}
+        programs: dict[str, MeasureProgram] = {}
         for measure in selected:
-            starts[measure] = float(
-                st.slider(
-                    f"Старт {measure} — {model.node(measure).short or measure}, мес.",
-                    min_value=0,
-                    max_value=horizon,
-                    value=0,
-                    step=1,
-                )
+            short = model.node(measure).short or measure
+            st.markdown(f"**{measure} · {short}**")
+            start = st.slider(
+                f"Старт {measure}, мес.",
+                min_value=0,
+                max_value=horizon,
+                value=0,
+                step=1,
+                key=f"custom_start_{measure}_{horizon}",
+            )
+            intensity = st.slider(
+                f"Интенсивность {measure}",
+                min_value=0.0,
+                max_value=1.0,
+                value=1.0,
+                step=0.05,
+                key=f"custom_intensity_{measure}",
+            )
+            until_end = st.checkbox(
+                f"{measure}: до конца периода",
+                value=True,
+                key=f"custom_until_end_{measure}_{horizon}",
+            )
+            duration = st.number_input(
+                f"Продолжительность {measure}, мес.",
+                min_value=1,
+                max_value=horizon,
+                value=horizon,
+                step=1,
+                disabled=until_end,
+                key=f"custom_duration_{measure}_{horizon}",
+            )
+            programs[measure] = MeasureProgram(
+                start=float(start),
+                duration=None if until_end else float(duration),
+                intensity=float(intensity),
             )
         plan = Plan(
             name="custom",
             label="Свой набор",
-            programs={
-                measure: MeasureProgram(start=starts[measure]) for measure in selected
-            },
+            programs=programs,
         )
     else:
         plan = model.plan(plan_key)
@@ -335,7 +622,9 @@ c1.metric(
 c2.metric(
     "Цель",
     "да" if summary["reached"] else "нет",
-    delta=f"{t_goal:g} мес." if t_goal is not None else "за горизонтом",
+    delta=f"{t_goal:g} мес."
+    if t_goal is not None
+    else "за пределами периода моделирования",
 )
 admissible = bool(summary["reached"] and summary["feasible"])
 c3.metric(
@@ -617,11 +906,11 @@ with tab_scenarios:
     fig.tight_layout()
     show_fig(fig)
 
-    scenario_rows = []
+    scenario_table_rows = []
     for sc in model.scenarios.values():
         res = simulate(model, plan, sc, options)
         s = summarize(res)
-        scenario_rows.append(
+        scenario_table_rows.append(
             {
                 "Сценарий": sc.label,
                 "Достигнута": "да" if s["reached"] else "нет",
@@ -634,7 +923,7 @@ with tab_scenarios:
             }
         )
     st.dataframe(
-        pd.DataFrame(scenario_rows),
+        pd.DataFrame(scenario_table_rows),
         width="stretch",
         hide_index=True,
     )
@@ -658,10 +947,10 @@ with tab_graph:
 
     st.subheader("Граф: просмотр и редактирование")
     if graph_error:
-        st.error("Граф не применён к расчётам:\n\n" + graph_error)
+        st.error("Модель не применена к расчётам:\n\n" + graph_error)
         st.caption(
             "Показана и используется последняя валидная версия. "
-            "Исправьте таблицы ниже и нажмите «Применить изменения»."
+            "Исправьте параметры в карточках ниже."
         )
 
     show_fig(
@@ -680,13 +969,15 @@ with tab_graph:
     c_reset, c_download = st.columns(2)
     if c_reset.button(
         "Сбросить",
-        help="Вернуть вершины и дуги исходного YAML. Параметры и планы не меняются.",
+        help="Вернуть вершины, дуги, планы и сценарии исходного YAML.",
     ):
         st.session_state.node_rows = node_rows(base_model)
         st.session_state.edge_rows = edge_rows(base_model)
+        st.session_state.plan_rows = plan_rows(base_model)
+        st.session_state.scenario_rows = scenario_rows(base_model)
         st.session_state.graph_epoch += 1
         st.session_state.last_valid_model = base_model
-        st.session_state.graph_flash = "Граф сброшен к исходному конфигу."
+        st.session_state.graph_flash = "Модель сброшена к исходному конфигу."
         st.rerun()
 
     c_download.download_button(
@@ -698,20 +989,13 @@ with tab_graph:
     )
     st.caption(
         f"Сейчас в модели: **{len(model.nodes)}** вершин, **{len(model.edges)}** дуг. "
-        "Изменения из таблиц применяются к расчётам только после нажатия "
-        "«Применить изменения»."
+        "Параметры в карточках применяются сразу после нажатия «Сохранить» "
+        "в диалоговом окне."
     )
 
-    st.subheader("Вершины и дуги")
-    st.caption(
-        "ID и тип существующей вершины фиксированы. Меняйте параметры, дуги "
-        "и координаты; новую вершину можно добавить ниже. Для факторов среды Y "
-        "поля «база» и «цель» не используются."
-    )
     epoch = st.session_state.graph_epoch
     node_table = st.session_state.node_rows
     edge_table = st.session_state.edge_rows
-
     node_ids = [
         str(row.get("id", "")).strip()
         for row in node_table
@@ -730,72 +1014,219 @@ with tab_graph:
         if str(row.get("id", "")).strip()
     }
 
-    node_frame = pd.DataFrame(node_table, columns=NODE_FIELDS)
+    st.subheader("Вершины")
+    st.caption(
+        "Редактирование разнесено по трём пространствам. ID и тип вершины "
+        "фиксированы; название и параметры меняются в карточке вершины."
+    )
+    space = st.radio(
+        "Пространство вершин",
+        ["Показатели X", "Меры M", "Среда Y"],
+        horizontal=True,
+        key="vertex_space",
+        label_visibility="collapsed",
+    )
+
+    if space == "Показатели X":
+        indicator_rows = [
+            row
+            for row in node_table
+            if str(row.get("kind", "")) == INDICATOR
+        ]
+        if not indicator_rows:
+            st.caption("В модели нет показателей.")
+        for row in indicator_rows:
+            node_id = str(row.get("id", "")).strip()
+            if not node_id:
+                continue
+            short = str(row.get("short") or row.get("label") or node_id)
+            with st.container(border=True):
+                c_text, c_action = st.columns([4, 1])
+                with c_text:
+                    st.markdown(f"**{node_id} · {short}**")
+                    st.write(str(row.get("label") or ""))
+                    st.caption(
+                        f"Направление: "
+                        f"{'рост (up)' if row.get('direction') == 'up' else 'снижение (down)'} · "
+                        f"база {fmt(row.get('base'))} · цель {fmt(row.get('target'))} · "
+                        f"rise {fmt(row.get('rise'), 0)} мес."
+                    )
+                with c_action:
+                    if st.button(
+                        "Изменить",
+                        key=f"edit_indicator_{node_id}_{epoch}",
+                    ):
+                        edit_indicator_dialog(node_id, epoch)
+
+    elif space == "Меры M":
+        plan_names = list(st.session_state.plan_rows)
+        if not plan_names:
+            st.caption("В модели нет именованных планов.")
+        else:
+            plan_labels = {
+                name: (
+                    model.plans[name].label
+                    if name in model.plans
+                    else name
+                )
+                for name in plan_names
+            }
+            default_plan_name = (
+                plan.name if plan.name in plan_names else plan_names[0]
+            )
+            plan_edit_name = st.selectbox(
+                "План для настройки мер",
+                plan_names,
+                index=plan_names.index(default_plan_name),
+                format_func=lambda name: plan_labels.get(name, name),
+                key=f"measure_plan_select_{epoch}",
+                help="Изменения начала, интенсивности и продолжительности "
+                "применяются к выбранному плану.",
+            )
+            st.caption(
+                "Для именованных планов параметры ниже сохраняются в план. "
+                "Расписание «Своего набора» задаётся в боковой панели."
+            )
+            if plan.name not in plan_names:
+                st.caption(
+                    "Сейчас в боковой панели выбран «Свой набор»; "
+                    "ниже редактируется именованный план, выбранный в этом поле."
+                )
+            plan_label = plan_labels.get(plan_edit_name, plan_edit_name)
+            plan_data = st.session_state.plan_rows.get(plan_edit_name, {})
+            measure_rows = [
+                row
+                for row in node_table
+                if str(row.get("kind", "")) == MEASURE
+            ]
+            if not measure_rows:
+                st.caption("В модели нет мер.")
+            for row in measure_rows:
+                node_id = str(row.get("id", "")).strip()
+                if not node_id:
+                    continue
+                short = str(row.get("short") or row.get("label") or node_id)
+                program = plan_data.get(node_id)
+                with st.container(border=True):
+                    c_text, c_action = st.columns([4, 1])
+                    with c_text:
+                        st.markdown(f"**{node_id} · {short}**")
+                        st.write(str(row.get("label") or ""))
+                        st.caption(
+                            f"Стоимость: {fmt(row.get('cost'), 1)} млн · "
+                            f"ответственный: {row.get('owner') or '—'}"
+                        )
+                        if isinstance(program, dict):
+                            duration = program.get("duration")
+                            duration_text = (
+                                "до конца периода"
+                                if duration is None
+                                else f"{fmt(duration, 0)} мес."
+                            )
+                            st.caption(
+                                f"В плане «{plan_label}»: старт "
+                                f"{fmt(program.get('start'), 0)} мес. · "
+                                f"интенсивность {fmt(program.get('intensity'))} · "
+                                f"{duration_text}"
+                            )
+                        else:
+                            st.caption(
+                                f"В план «{plan_label}» не входит. "
+                                "Откройте карточку, чтобы включить."
+                            )
+                    with c_action:
+                        if st.button(
+                            "Изменить",
+                            key=f"edit_measure_{plan_edit_name}_{node_id}_{epoch}",
+                        ):
+                            edit_measure_dialog(
+                                node_id,
+                                plan_edit_name,
+                                plan_label,
+                                epoch,
+                                int(horizon),
+                            )
+
+    else:
+        scenario_names = list(st.session_state.scenario_rows)
+        if not scenario_names:
+            st.caption("В модели нет сценариев.")
+        else:
+            scenario_labels = {
+                name: (
+                    model.scenarios[name].label
+                    if name in model.scenarios
+                    else name
+                )
+                for name in scenario_names
+            }
+            default_scenario_name = (
+                scenario.name
+                if scenario.name in scenario_names
+                else scenario_names[0]
+            )
+            scenario_edit_name = st.selectbox(
+                "Сценарий для настройки отклонений",
+                scenario_names,
+                index=scenario_names.index(default_scenario_name),
+                format_func=lambda name: scenario_labels.get(name, name),
+                key=f"environment_scenario_select_{epoch}",
+                help="Отклонение задаётся для выбранного сценария.",
+            )
+            if scenario.name != scenario_edit_name:
+                st.caption(
+                    f"В боковой панели выбран другой сценарий; ниже "
+                    f"редактируются отклонения для «{scenario_labels[scenario_edit_name]}»."
+                )
+            scenario_values = st.session_state.scenario_rows.get(
+                scenario_edit_name, {}
+            )
+            environment_rows = [
+                row
+                for row in node_table
+                if str(row.get("kind", "")) == ENVIRONMENT
+            ]
+            if not environment_rows:
+                st.caption("В модели нет факторов среды.")
+            for row in environment_rows:
+                node_id = str(row.get("id", "")).strip()
+                if not node_id:
+                    continue
+                short = str(row.get("short") or row.get("label") or node_id)
+                deviation = float(scenario_values.get(node_id, 0.0))
+                with st.container(border=True):
+                    c_text, c_action = st.columns([4, 1])
+                    with c_text:
+                        st.markdown(f"**{node_id} · {short}**")
+                        st.write(str(row.get("label") or ""))
+                        st.caption(
+                            f"Отклонение в сценарии "
+                            f"«{scenario_labels[scenario_edit_name]}»: "
+                            f"{deviation:+.2f} · единица: {row.get('unit') or '—'}"
+                        )
+                    with c_action:
+                        if st.button(
+                            "Изменить",
+                            key=(
+                                f"edit_environment_{scenario_edit_name}_"
+                                f"{node_id}_{epoch}"
+                            ),
+                        ):
+                            edit_environment_dialog(
+                                node_id,
+                                scenario_edit_name,
+                                scenario_labels[scenario_edit_name],
+                                epoch,
+                            )
+
+    st.divider()
+    st.subheader("Дуги")
+    st.caption(
+        "«В» — только показатели X: по модели дуга должна входить в показатель. "
+        "Новую строку можно добавить внизу таблицы."
+    )
     edge_frame = pd.DataFrame(edge_table, columns=EDGE_FIELDS)
-
-    with st.form(f"graph_editor_{epoch}"):
-        st.markdown("**Вершины**")
-        edited_nodes = st.data_editor(
-            node_frame,
-            num_rows="fixed",
-            hide_index=True,
-            width="stretch",
-            height=330,
-            disabled=["id", "kind"],
-            column_config={
-                "id": st.column_config.TextColumn("ID", width="small"),
-                "kind": st.column_config.SelectboxColumn(
-                    "Тип",
-                    options=[INDICATOR, MEASURE, ENVIRONMENT],
-                    format_func=lambda kind: KIND_LABELS.get(kind, kind),
-                    width="medium",
-                ),
-                "label": st.column_config.TextColumn("Название", width="large"),
-                "short": st.column_config.TextColumn("Коротко", width="medium"),
-                "unit": st.column_config.TextColumn("Ед.", width="small"),
-                "direction": st.column_config.SelectboxColumn(
-                    "Направление",
-                    options=["up", "down"],
-                    format_func=lambda d: "рост (up)"
-                    if d == "up"
-                    else "снижение (down)",
-                    width="small",
-                    help="up: больше — лучше; down: меньше — лучше (X растёт при снижении).",
-                ),
-                "base": st.column_config.NumberColumn(
-                    "База", format="%.2f", help="Физическое базовое значение — для показателей."
-                ),
-                "target": st.column_config.NumberColumn(
-                    "Цель", format="%.2f", help="Физическая цель — для показателей."
-                ),
-                "rise": st.column_config.NumberColumn(
-                    "rise, мес.",
-                    format="%.0f",
-                    min_value=0,
-                    help="Время до плато — только для показателей.",
-                ),
-                "cost": st.column_config.NumberColumn(
-                    "Стоимость, млн",
-                    format="%.1f",
-                    min_value=0,
-                    help="Разовая стоимость меры, млн руб.",
-                ),
-                "owner": st.column_config.TextColumn(
-                    "Ответственный",
-                    width="medium",
-                    help="Подразделение, которому передаётся мера.",
-                ),
-                "x": st.column_config.NumberColumn("x", format="%.1f"),
-                "y": st.column_config.NumberColumn("y", format="%.1f"),
-            },
-            key=f"node_editor_{epoch}",
-        )
-
-        st.markdown("**Дуги**")
-        st.caption(
-            "«В» — только показатели X: по модели дуга должна входить в показатель. "
-            "Новую строку можно добавить внизу таблицы."
-        )
+    with st.form(f"graph_editor_edges_{epoch}"):
         edited_edges = st.data_editor(
             edge_frame,
             num_rows="dynamic",
@@ -824,25 +1255,26 @@ with tab_graph:
             key=f"edge_editor_{epoch}",
         )
         submitted = st.form_submit_button(
-            "Применить изменения", type="primary"
+            "Применить изменения дуг", type="primary"
         )
 
     if submitted:
-        st.session_state.node_rows = edited_nodes.to_dict("records")
         st.session_state.edge_rows = edited_edges.to_dict("records")
         try:
             build_model(
                 base_model,
                 st.session_state.node_rows,
                 st.session_state.edge_rows,
+                st.session_state.plan_rows,
+                st.session_state.scenario_rows,
             )
         except Exception:  # noqa: BLE001
             st.session_state.graph_flash = (
-                "Правки внесены в таблицы, но граф пока невалиден — "
+                "Правки внесены, но модель пока невалидна — "
                 "смотрите сообщение об ошибке ниже."
             )
         else:
-            st.session_state.graph_flash = "Изменения графа применены."
+            st.session_state.graph_flash = "Дуги применены."
         # Новый epoch сбрасывает состояние data_editor: иначе после
         # добавления/удаления строки Streamlit может применить старые
         # added_rows/deleted_rows к уже обновлённой таблице.
@@ -850,11 +1282,6 @@ with tab_graph:
         st.rerun()
 
     st.divider()
-    st.caption(
-        "Действия ниже работают с уже применённой моделью: если вы правили "
-        "таблицы, сначала нажмите «Применить изменения», иначе неприменённые "
-        "правки в них не попадут."
-    )
     with st.expander("Добавить вершину", expanded=False):
         new_kind = st.selectbox(
             "Тип новой вершины",
@@ -865,12 +1292,12 @@ with tab_graph:
         if new_kind == ENVIRONMENT:
             st.caption(
                 "Новый фактор среды по умолчанию равен 0 во всех сценариях; "
-                "его значения задаются в YAML после экспорта."
+                "отклонение задаётся в карточке фактора."
             )
         elif new_kind == MEASURE:
             st.caption(
-                "Новая мера попадёт в перебор планов; в текущий план её можно "
-                "добавить через «Свой набор…» в боковой панели."
+                "Новая мера появится в пространстве «Меры M». Чтобы включить "
+                "её в план, откройте карточку меры и поставьте галочку."
             )
         else:
             st.caption(
@@ -951,11 +1378,12 @@ with tab_graph:
                 st.error(str(exc))
             else:
                 st.session_state.node_rows.append(row)
-                st.session_state.graph_epoch += 1
-                st.session_state.graph_flash = (
+                if new_kind == ENVIRONMENT:
+                    for values in st.session_state.scenario_rows.values():
+                        values.setdefault(node_id, 0.0)
+                _finish_graph_edit(
                     f"Добавлена вершина {node_id}. Не забудьте добавить дуги."
                 )
-                st.rerun()
 
     with st.expander("Удалить вершину", expanded=False):
         deletable = [
@@ -989,9 +1417,11 @@ with tab_graph:
                     if str(row.get("from", "")).strip() != victim
                     and str(row.get("to", "")).strip() != victim
                 ]
-                st.session_state.graph_epoch += 1
-                st.session_state.graph_flash = f"Вершина {victim} удалена."
-                st.rerun()
+                for programs in st.session_state.plan_rows.values():
+                    programs.pop(victim, None)
+                for values in st.session_state.scenario_rows.values():
+                    values.pop(victim, None)
+                _finish_graph_edit(f"Вершина {victim} удалена.")
 
     with st.expander("Сохранить YAML в проект"):
         st.caption(
@@ -1033,10 +1463,7 @@ with tab_graph:
                     except Exception as exc:  # noqa: BLE001
                         st.error(f"Не удалось сохранить: {exc}")
                     else:
-                        st.session_state.graph_flash = (
-                            f"Сохранено: {target_path.name}."
-                        )
-                        st.rerun()
+                        _finish_graph_edit(f"Сохранено: {target_path.name}.")
 
 with tab_data:
     st.subheader("Ряды динамики")

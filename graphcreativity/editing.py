@@ -98,6 +98,29 @@ def edge_rows(model: Model) -> list[dict[str, Any]]:
     ]
 
 
+def plan_rows(model: Model) -> dict[str, dict[str, dict[str, Any]]]:
+    """Расписания мер по планам: план -> мера -> параметры."""
+    return {
+        name: {
+            measure: {
+                "start": program.start,
+                "duration": program.duration,
+                "intensity": program.intensity,
+            }
+            for measure, program in plan.programs.items()
+        }
+        for name, plan in model.plans.items()
+    }
+
+
+def scenario_rows(model: Model) -> dict[str, dict[str, float]]:
+    """Отклонения факторов среды: сценарий -> Y -> значение."""
+    return {
+        name: dict(scenario.values)
+        for name, scenario in model.scenarios.items()
+    }
+
+
 # ---------------------------------------------------------------------------
 # Строки таблиц -> Model
 # ---------------------------------------------------------------------------
@@ -143,13 +166,17 @@ def build_model(
     base: Model,
     node_table: Iterable[dict[str, Any]],
     edge_table: Iterable[dict[str, Any]],
+    plan_table: dict[str, dict[str, dict[str, Any]]] | None = None,
+    scenario_table: dict[str, dict[str, float]] | None = None,
 ) -> Model:
     """Собрать новую модель из отредактированных таблиц.
 
-    Параметры модели, планы и сценарии берутся из ``base``. Планы
-    очищаются от удалённых/переклассифицированных мер, сценарии — от
-    удалённых факторов среды. Бюджет здесь не проверяется: превышение
-    бюджета — это результат прогона, а не ошибка графа.
+    Параметры модели берутся из ``base``. Если переданы ``plan_table``
+    и/или ``scenario_table``, расписания мер и отклонения среды берутся
+    из них; иначе сохраняются из ``base``. Планы очищаются от удалённых
+    или переклассифицированных мер, сценарии — от удалённых факторов
+    среды. Бюджет здесь не проверяется: превышение бюджета — это
+    результат прогона, а не ошибка графа.
     """
     nodes: dict[str, Node] = {}
     for row in node_table:
@@ -243,23 +270,53 @@ def build_model(
 
     plans: dict[str, Plan] = {}
     for name, plan in base.plans.items():
-        programs = {
-            measure: MeasureProgram(
-                start=program.start,
-                duration=program.duration,
-                intensity=program.intensity,
+        if plan_table is None:
+            source = {
+                measure: {
+                    "start": program.start,
+                    "duration": program.duration,
+                    "intensity": program.intensity,
+                }
+                for measure, program in plan.programs.items()
+            }
+        else:
+            source = plan_table.get(
+                name,
+                {
+                    measure: {
+                        "start": program.start,
+                        "duration": program.duration,
+                        "intensity": program.intensity,
+                    }
+                    for measure, program in plan.programs.items()
+                },
             )
-            for measure, program in plan.programs.items()
-            if measure in nodes and nodes[measure].kind == MEASURE
-        }
+
+        programs: dict[str, MeasureProgram] = {}
+        for measure, data in source.items():
+            if measure not in nodes or nodes[measure].kind != MEASURE:
+                continue
+            if not isinstance(data, dict):
+                continue
+            duration = data.get("duration")
+            programs[measure] = MeasureProgram(
+                start=_as_float(data.get("start"), 0.0),
+                duration=None if _is_missing(duration) else _as_float(duration, 0.0),
+                intensity=_as_float(data.get("intensity"), 1.0),
+            )
         plans[name] = Plan(name=name, label=plan.label, programs=programs)
 
     scenarios: dict[str, Scenario] = {}
     for name, scenario in base.scenarios.items():
+        if scenario_table is None:
+            source = scenario.values
+        else:
+            source = scenario_table.get(name, scenario.values)
+
         values = {
-            node_id: value
-            for node_id, value in scenario.values.items()
-            if node_id in nodes and nodes[node_id].kind == ENVIRONMENT
+            node_id: _as_float(source.get(node_id), 0.0)
+            for node_id in nodes
+            if nodes[node_id].kind == ENVIRONMENT
         }
         scenarios[name] = Scenario(
             name=name,
