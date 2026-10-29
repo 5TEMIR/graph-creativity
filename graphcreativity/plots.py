@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import matplotlib
 
@@ -56,18 +56,23 @@ def _save(fig, path: str | Path | None):
     return fig
 
 
-def plot_dynamics(result: SimulationResult, path: str | Path | None = None):
+def plot_dynamics(
+    result: SimulationResult,
+    path: str | Path | None = None,
+    *,
+    show_scenario: bool = True,
+):
     """Главный график: цель, все показатели, меры, экономика."""
     model = result.model
     t = result.time
     target = model.node(result.params.target_node)
     fig, axes = plt.subplots(2, 2, figsize=(14, 8.5))
-    fig.suptitle(
-        f"Динамика: {result.plan.label or result.plan.name} · "
-        f"сценарий «{result.scenario.label or result.scenario.name}»",
-        fontsize=13,
-        fontweight="bold",
-    )
+    title = f"Динамика: {result.plan.label or result.plan.name}"
+    if show_scenario:
+        title += (
+            f" · сценарий «{result.scenario.label or result.scenario.name}»"
+        )
+    fig.suptitle(title, fontsize=13, fontweight="bold")
 
     # 1. Целевой показатель в процентах к базе
     ax = axes[0, 0]
@@ -165,19 +170,25 @@ def plot_dynamics(result: SimulationResult, path: str | Path | None = None):
     return _save(fig, path)
 
 
-def plot_indicators(result: SimulationResult, path: str | Path | None = None):
+def plot_indicators(
+    result: SimulationResult,
+    path: str | Path | None = None,
+    *,
+    show_scenario: bool = True,
+):
     """Small multiples: каждый показатель в физических единицах."""
     model = result.model
     nodes = model.indicators
     ncols = 3
     nrows = math.ceil(len(nodes) / ncols)
     fig, axes = plt.subplots(nrows, ncols, figsize=(15, 3.5 * nrows), squeeze=False)
-    fig.suptitle(
-        f"Показатели в физических единицах · {result.plan.label or result.plan.name} · "
-        f"«{result.scenario.label or result.scenario.name}»",
-        fontsize=13,
-        fontweight="bold",
+    title = (
+        f"Показатели в физических единицах · "
+        f"{result.plan.label or result.plan.name}"
     )
+    if show_scenario:
+        title += f" · «{result.scenario.label or result.scenario.name}»"
+    fig.suptitle(title, fontsize=13, fontweight="bold")
     for idx, node in enumerate(nodes):
         ax = axes[idx // ncols][idx % ncols]
         values = result.physical[node.id]
@@ -263,7 +274,12 @@ def plot_graph(
             color=color,
             alpha=alpha,
             zorder=3,
-            bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=0.5),
+            bbox={
+                "facecolor": "white",
+                "edgecolor": "none",
+                "alpha": 0.75,
+                "pad": 0.5,
+            },
         )
 
     for node in model.nodes.values():

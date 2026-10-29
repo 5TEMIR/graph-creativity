@@ -14,6 +14,21 @@ def test_streamlit_app_runs_without_exceptions():
     labels = [metric.label for metric in at.metric]
     assert "k = R / C" in labels
     assert "Меры в комплексе" in labels
+    tab_labels = [tab.label for tab in at.tabs]
+    assert tab_labels == [
+        "Динамика",
+        "Показатели",
+        "Сравнение планов",
+        "Граф",
+        "Данные",
+    ]
+    subheaders = [block.value for block in at.subheader]
+    assert "Матрица план × сценарий" not in subheaders
+    assert "Устойчивость к сценариям" not in subheaders
+    assert "Критические комбинации событий" not in subheaders
+    assert not any(
+        "сценарий" in caption.value.lower() for caption in at.caption
+    )
 
 
 def test_sidebar_has_no_scenario_or_plan_selectors():
@@ -65,11 +80,17 @@ def test_vertex_spaces_open_measure_and_environment_dialogs():
         box.label == "Сценарий для настройки отклонений"
         for box in at.selectbox
     )
+    assert not any(
+        "сценарий" in caption.value.lower() for caption in at.caption
+    )
     next(button for button in at.button if button.label == "Изменить").click().run()
 
     assert not at.exception
     assert any(
         slider.label == "Отклонение от номинала" for slider in at.slider
+    )
+    assert not any(
+        "сценарий" in caption.value.lower() for caption in at.caption
     )
 
 

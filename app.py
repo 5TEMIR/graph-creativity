@@ -1,7 +1,7 @@
 """Streamlit-приложение: графовая модель креативности.
 
-Интерфейс исследователя: все подмножества мер, σ₁, сценарии,
-чувствительность и редактирование графа.
+Интерфейс исследователя: все подмножества мер, σ₁, чувствительность
+и редактирование графа. Основной расчёт идёт по базовой среде.
 
 Запуск:
     .venv/bin/streamlit run app.py
@@ -26,7 +26,6 @@ from graphcreativity.editing import (
     node_rows,
     plan_rows,
     save_model_yaml,
-    scenario_rows,
     suggest_node_id,
     validate_new_node_id,
 )
@@ -34,12 +33,10 @@ from graphcreativity.engine import SimOptions, simulate
 from graphcreativity.metrics import (
     compare_named_plans,
     compare_plans,
-    critical_event_combinations,
     critical_removal_sets,
     effect_strength,
     minimal_sufficient_sets,
     pareto_front,
-    scenario_robustness,
     summarize,
 )
 from graphcreativity.model import (
@@ -121,6 +118,19 @@ def _default_plan_name(model) -> str:
     if "hybrid" in names:
         return "hybrid"
     return names[0] if names else CUSTOM_PLAN
+
+
+def _base_scenario_name(model) -> str:
+    """Сценарий, который Streamlit использует для основного расчёта."""
+    if "nominal" in model.scenarios:
+        return "nominal"
+    return next(iter(model.scenarios), "nominal")
+
+
+def _base_environment_values(model, scenario_name: str) -> dict[str, float]:
+    if scenario_name not in model.scenarios:
+        return {}
+    return dict(model.scenario(scenario_name).values)
 
 
 def _initial_custom_programs(model, plan_table: dict) -> dict[str, dict]:
@@ -374,22 +384,17 @@ def edit_measure_dialog(
 
 
 @st.dialog("Фактор среды")
-def edit_environment_dialog(
-    node_id: str,
-    scenario_name: str,
-    scenario_label: str,
-    epoch: int,
-) -> None:
+def edit_environment_dialog(node_id: str, epoch: int) -> None:
     row = _row_by_id(node_id)
     if row is None:
         st.error(f"Вершина {node_id} не найдена.")
         return
 
-    values = st.session_state.scenario_rows.setdefault(scenario_name, {})
+    values = st.session_state.environment_values
     current = float(values.get(node_id, 0.0))
 
-    with st.form(f"environment_dialog_{node_id}_{scenario_name}_{epoch}"):
-        st.caption(f"ID: `{node_id}` · фактор среды Y · сценарий: {scenario_label}")
+    with st.form(f"environment_dialog_{node_id}_{epoch}"):
+        st.caption(f"ID: `{node_id}` · фактор среды Y")
         label = st.text_input("Название", value=str(row.get("label") or ""))
         c_short, c_unit = st.columns(2)
         short = c_short.text_input("Короткое имя", value=str(row.get("short") or ""))
@@ -409,7 +414,7 @@ def edit_environment_dialog(
             max_value=high,
             value=min(max(current, low), high),
             step=0.05,
-            key=f"environment_deviation_{node_id}_{scenario_name}_{epoch}",
+            key=f"environment_deviation_{node_id}_{epoch}",
             help="Безразмерное отклонение: 0 — номинал, отрицательное — неблагоприятное.",
         )
         with st.expander("Положение на графе"):
@@ -433,10 +438,8 @@ def edit_environment_dialog(
                 }
             )
             values[node_id] = float(deviation)
-            st.session_state.scenario_rows[scenario_name] = values
-            _finish_graph_edit(
-                f"Фактор {node_id} обновлён для сценария «{scenario_label}»."
-            )
+            st.session_state.environment_values = values
+            _finish_graph_edit(f"Фактор {node_id} обновлён.")
 
 
 # ---------------------------------------------------------------------------
@@ -463,13 +466,15 @@ with st.sidebar:
         configs,
         index=default_config_index,
         format_func=lambda p: p.name,
-        help="Модель, дуги, параметры, планы и сценарии — всё в YAML.",
+        help="Модель, дуги, параметры и планы — всё в YAML.",
     )
     try:
         base_model = load_model(config_path)
     except Exception as exc:  # noqa: BLE001
         st.error(f"Ошибка загрузки модели:\n\n{exc}")
         st.stop()
+
+    active_scenario_name = _base_scenario_name(base_model)
 
     # Состояние редактора графа. При смене конфига сбрасываем его.
     if st.session_state.get("graph_config") != str(config_path):
@@ -478,7 +483,9 @@ with st.sidebar:
         st.session_state.node_rows = node_rows(base_model)
         st.session_state.edge_rows = edge_rows(base_model)
         st.session_state.plan_rows = plan_rows(base_model)
-        st.session_state.scenario_rows = scenario_rows(base_model)
+        st.session_state.environment_values = _base_environment_values(
+            base_model, active_scenario_name
+        )
         st.session_state.active_plan_name = _default_plan_name(base_model)
         st.session_state.custom_plan_programs = _initial_custom_programs(
             base_model, st.session_state.plan_rows
@@ -490,7 +497,10 @@ with st.sidebar:
 
     # Совместимость с сессией, открытой до появления редакторов планов.
     st.session_state.setdefault("plan_rows", plan_rows(base_model))
-    st.session_state.setdefault("scenario_rows", scenario_rows(base_model))
+    st.session_state.setdefault(
+        "environment_values",
+        _base_environment_values(base_model, active_scenario_name),
+    )
     st.session_state.setdefault("active_plan_name", _default_plan_name(base_model))
     st.session_state.setdefault(
         "custom_plan_programs",
@@ -507,7 +517,7 @@ with st.sidebar:
             st.session_state.node_rows,
             st.session_state.edge_rows,
             st.session_state.plan_rows,
-            st.session_state.scenario_rows,
+            {active_scenario_name: st.session_state.environment_values},
         )
         st.session_state.last_valid_model = model
         graph_error: str | None = None
@@ -616,23 +626,19 @@ x_i(t+1)=x_i(t)+\lambda_i(x_{\max}-x_i(t))[\sigma_i-\theta]_+-\mu_i x_i(t)
 $$
 
 $\lambda_i=\ln 10/\tau_i^{rise}$. Меры — ступеньки $u_j(t)$,
-среда — отклонение сценария от номинала.
+среда — отклонение от номинала.
 
 При режиме «проценты» $R$ — прирост $X_1$; режим «рубли» монетизирует
 только $X_7$, поэтому для сравнения планов используется процентный режим.
 """
         )
 
-# Активный комплекс мер и среда. Сценарий для основного расчёта —
-# номинальный; остальные сценарии остаются для анализа устойчивости.
+# Активный комплекс мер и базовая среда.
 _editable_plans = _editable_plan_names(model)
 if st.session_state.get("active_plan_name") not in _editable_plans + [CUSTOM_PLAN]:
     st.session_state.active_plan_name = _default_plan_name(model)
 _sync_custom_state(model)
 plan = _build_active_plan(model)
-active_scenario_name = (
-    "nominal" if "nominal" in model.scenarios else next(iter(model.scenarios))
-)
 scenario = model.scenario(active_scenario_name)
 
 options = SimOptions(
@@ -658,7 +664,7 @@ st.title("Динамика показателей креативности")
 st.caption(
     "Графовая модель «меры → факторы креативности → среда». "
     f"Конфиг {model.params.version}; θ={theta:g}; "
-    f"бюджет {budget_max:g} млн руб.; среда: {scenario.label}. "
+    f"бюджет {budget_max:g} млн руб. "
     "Комплекс мер и вершины меняются на вкладке «Граф», "
     "параметры расчёта — слева."
 )
@@ -726,19 +732,18 @@ named_rows = compare_named_plans(model, scenario, options)
 # Вкладки
 # ---------------------------------------------------------------------------
 
-tab_dynamics, tab_indicators, tab_compare, tab_scenarios, tab_graph, tab_data = st.tabs(
+tab_dynamics, tab_indicators, tab_compare, tab_graph, tab_data = st.tabs(
     [
         "Динамика",
         "Показатели",
         "Сравнение планов",
-        "Сценарии",
         "Граф",
         "Данные",
     ]
 )
 
 with tab_dynamics:
-    show_fig(plot_dynamics(result))
+    show_fig(plot_dynamics(result, show_scenario=False))
     st.caption(
         "Слева сверху — целевой показатель X1 в процентах к базе. "
         "Справа сверху — все пять показателей в нормированном виде. "
@@ -746,7 +751,7 @@ with tab_dynamics:
     )
 
 with tab_indicators:
-    show_fig(plot_indicators(result))
+    show_fig(plot_indicators(result, show_scenario=False))
     st.caption(
         "Каждый показатель в своих единицах. Пунктир — база, красная линия — цель. "
         "Для X3 и X7 «лучше» означает ниже."
@@ -755,10 +760,9 @@ with tab_indicators:
 with tab_compare:
     st.subheader("Именованные планы")
     st.caption(
-        f"Сценарий: {scenario.label}. Собственные старты планов сохранены: "
-        "гибрид запускает m3 с 3-го месяца. Для именованного активного "
-        "комплекса его строка совпадает с KPI; «Свой комплекс мер» "
-        "считается в KPI отдельно."
+        "Собственные старты планов сохранены: гибрид запускает m3 с "
+        "3-го месяца. Для именованного активного комплекса его строка "
+        "совпадает с KPI; «Свой комплекс мер» считается в KPI отдельно."
     )
     named_table = pd.DataFrame(
         [
@@ -787,9 +791,8 @@ with tab_compare:
     st.divider()
     st.subheader("Все подмножества мер")
     st.caption(
-        f"Сценарий: {scenario.label}. Здесь все меры стартуют с 0-го месяца — "
-        "это сетка для поиска минимальных наборов, а не сравнение с "
-        "именованными планами."
+        "Здесь все меры стартуют с 0-го месяца — это сетка для поиска "
+        "минимальных наборов, а не сравнение с именованными планами."
     )
     rows = compare_plans(model, scenario, options, include_empty=True)
 
@@ -842,155 +845,7 @@ with tab_compare:
     c.markdown("**Парето-фронт**")
     c.write(", ".join(r["plan"] for r in front) or "—")
 
-    st.divider()
-    st.subheader("Критические комбинации событий")
-    st.caption(
-        "Минимальные наборы неблагоприятных событий, при которых план "
-        "перестаёт достигать цели в номинале. Это отдельный объект от "
-        "«критических мер»."
-    )
-    event_rows = []
-    named_nominal = {
-        row["plan"]: row
-        for row in compare_named_plans(model, "nominal", options)
-    }
-    for plan_name in model.plans:
-        combos = critical_event_combinations(model, plan_name, options=options)
-        baseline = named_nominal.get(plan_name, {})
-        baseline_ok = bool(baseline.get("reached") and baseline.get("feasible"))
-        if not baseline_ok:
-            text = "план недопустим уже без событий (цель/бюджет)"
-        elif combos:
-            text = ", ".join(
-                "{"
-                + ", ".join(model.scenario(event).label or event for event in combo)
-                + "}"
-                for combo in combos
-            )
-        else:
-            text = "нет (план устойчив ко всем комбинациям)"
-        event_rows.append(
-            {
-                "План": model.plan(plan_name).label,
-                "Критические комбинации": text,
-            }
-        )
-    st.dataframe(pd.DataFrame(event_rows), width="stretch", hide_index=True)
-
-    st.divider()
-    st.subheader("Матрица план × сценарий")
-    st.caption(
-        "T_goal в месяцах; «—» — цель не достигнута; «бюджет» — план "
-        "превышает бюджет. «Радиус» — сколько одновременных событий "
-        "план выдерживает."
-    )
-    matrix_rows = []
-    for plan_name, plan_obj in model.plans.items():
-        robustness = scenario_robustness(model, plan_obj, options=options)
-        row = {"План": plan_obj.label}
-        for scenario_row in robustness["rows"]:
-            if not scenario_row["feasible"]:
-                value = "бюджет"
-            elif scenario_row["reached"]:
-                value = f"{scenario_row['t_goal']:g} мес."
-            else:
-                value = "—"
-            row[scenario_row["label"]] = value
-        row["Радиус"] = (
-            str(robustness["radius"]) if robustness["radius"] >= 0 else "—"
-        )
-        matrix_rows.append(row)
-    st.dataframe(pd.DataFrame(matrix_rows), width="stretch", hide_index=True)
-
     show_fig(plot_compare(rows))
-
-    st.divider()
-    st.subheader("Устойчивость к сценариям")
-    if st.checkbox("Посчитать устойчивость всех планов", value=False):
-        with st.spinner("Прогоняю сценарии…"):
-            robust_rows = []
-            for row in rows:
-                plan_obj = Plan(
-                    name=row["plan"],
-                    label=row["plan_label"],
-                    programs={
-                        m: MeasureProgram(start=0.0) for m in row["measures"]
-                    },
-                )
-                robustness = scenario_robustness(model, plan_obj, options=options)
-                robust_rows.append(
-                    {
-                        "План": row["plan"],
-                        "Доля сценариев с целью": robustness["success_share"] * 100,
-                        "Радиус, событий": robustness["radius"]
-                        if robustness["radius"] >= 0
-                        else "—",
-                        "Худший запас": robustness["min_margin"],
-                    }
-                )
-        st.dataframe(
-            pd.DataFrame(robust_rows),
-            width="stretch",
-            hide_index=True,
-            column_config={
-                "Доля сценариев с целью": st.column_config.ProgressColumn(
-                    min_value=0, max_value=100, format="%.0f%%"
-                ),
-                "Радиус, событий": st.column_config.TextColumn(),
-                "Худший запас": st.column_config.NumberColumn(format="%.2f"),
-            },
-        )
-    else:
-        st.caption("Включите галочку, чтобы прогнать каждый план по всем сценариям.")
-
-with tab_scenarios:
-    st.subheader("Веер сценариев для активного комплекса мер")
-    fig, ax = plt.subplots(figsize=(12, 4.8))
-    for sc in model.scenarios.values():
-        res = simulate(model, plan, sc, options)
-        ax.plot(
-            res.time,
-            res.states[res.target_id],
-            lw=1.8,
-            label=f"{sc.label} (T={res.first_goal_time() or '—'})",
-        )
-    ax.axhline(1.0, color="#C00000", ls="--", lw=1.1, label="цель x=1")
-    ax.set_xlabel("месяц")
-    ax.set_ylabel(f"{target.id}, норм.")
-    ax.set_title("X1 по сценариям внешней среды")
-    ax.grid(alpha=0.25)
-    ax.legend(fontsize=8, loc="upper left")
-    fig.tight_layout()
-    show_fig(fig)
-
-    scenario_table_rows = []
-    for sc in model.scenarios.values():
-        res = simulate(model, plan, sc, options)
-        s = summarize(res)
-        scenario_table_rows.append(
-            {
-                "Сценарий": sc.label,
-                "Достигнута": "да" if s["reached"] else "нет",
-                "T_goal": num(s["t_goal"], 0),
-                "x1(T)": num(s["x_target_T"], 2),
-                "Запас": num(s["margin"], 2),
-                "Рост, %": num(s["growth_pct_T"], 1),
-                "k": num(s["k_T"], 3),
-                "Бюджет": "ок" if s["feasible"] else "превышен",
-            }
-        )
-    st.dataframe(
-        pd.DataFrame(scenario_table_rows),
-        width="stretch",
-        hide_index=True,
-    )
-
-    selected_robustness = scenario_robustness(model, plan, options=options)
-    st.caption(
-        f"Радиус устойчивости: **{selected_robustness['radius']}** из "
-        f"{len(model.atomic_scenarios)} одновременных событий; "
-        f"доля сценариев с целью — {selected_robustness['success_share'] * 100:.0f} %."
-    )
 
 with tab_graph:
     flash = st.session_state.pop("graph_flash", None)
@@ -1055,13 +910,15 @@ with tab_graph:
     c_reset, c_download = st.columns(2)
     if c_reset.button(
         "Сбросить",
-        help="Вернуть вершины, дуги, именованные планы и сценарии исходного YAML. "
+        help="Вернуть вершины, дуги и именованные планы исходного YAML. "
         "Свой комплекс мер остаётся в текущей сессии.",
     ):
         st.session_state.node_rows = node_rows(base_model)
         st.session_state.edge_rows = edge_rows(base_model)
         st.session_state.plan_rows = plan_rows(base_model)
-        st.session_state.scenario_rows = scenario_rows(base_model)
+        st.session_state.environment_values = _base_environment_values(
+            base_model, active_scenario_name
+        )
         st.session_state.graph_epoch += 1
         st.session_state.last_valid_model = base_model
         st.session_state.graph_flash = "Модель сброшена к исходному конфигу."
@@ -1072,7 +929,7 @@ with tab_graph:
         data=model_to_yaml(model).encode("utf-8"),
         file_name=f"{config_path.stem}_edited.yaml",
         mime="application/yaml",
-        help="Сохраняется последняя валидная модель вместе с планами и сценариями.",
+        help="Сохраняется последняя валидная модель вместе с планами.",
     )
     st.caption(
         f"Сейчас в модели: **{len(model.nodes)}** вершин, **{len(model.edges)}** дуг. "
@@ -1230,14 +1087,10 @@ with tab_graph:
                         )
 
     else:
-        scenario_label = model.scenarios[active_scenario_name].label
-        scenario_values = st.session_state.scenario_rows.get(
-            active_scenario_name, {}
-        )
+        environment_values = st.session_state.environment_values
         st.caption(
-            f"Отклонения задаются для сценария «{scenario_label}». "
-            "Остальные сценарии используются на вкладке «Сценарии» "
-            "и здесь не редактируются."
+            "Отклонение от номинала используется в базовом расчёте и "
+            "задаётся в карточке фактора."
         )
         environment_rows = [
             row
@@ -1251,7 +1104,7 @@ with tab_graph:
             if not node_id:
                 continue
             short = str(row.get("short") or row.get("label") or node_id)
-            deviation = float(scenario_values.get(node_id, 0.0))
+            deviation = float(environment_values.get(node_id, 0.0))
             with st.container(border=True):
                 c_text, c_action = st.columns([4, 1])
                 with c_text:
@@ -1266,12 +1119,7 @@ with tab_graph:
                         "Изменить",
                         key=f"edit_environment_{node_id}_{epoch}",
                     ):
-                        edit_environment_dialog(
-                            node_id,
-                            active_scenario_name,
-                            scenario_label,
-                            epoch,
-                        )
+                        edit_environment_dialog(node_id, epoch)
 
     st.divider()
     st.subheader("Дуги")
@@ -1320,7 +1168,7 @@ with tab_graph:
                 st.session_state.node_rows,
                 st.session_state.edge_rows,
                 st.session_state.plan_rows,
-                st.session_state.scenario_rows,
+                {active_scenario_name: st.session_state.environment_values},
             )
         except Exception:  # noqa: BLE001
             st.session_state.graph_flash = (
@@ -1345,8 +1193,8 @@ with tab_graph:
         )
         if new_kind == ENVIRONMENT:
             st.caption(
-                "Новый фактор среды по умолчанию равен 0 во всех сценариях; "
-                "отклонение задаётся в карточке фактора."
+                "Новый фактор среды по умолчанию равен 0; отклонение "
+                "задаётся в карточке фактора."
             )
         elif new_kind == MEASURE:
             st.caption(
@@ -1434,8 +1282,7 @@ with tab_graph:
             else:
                 st.session_state.node_rows.append(row)
                 if new_kind == ENVIRONMENT:
-                    for values in st.session_state.scenario_rows.values():
-                        values.setdefault(node_id, 0.0)
+                    st.session_state.environment_values.setdefault(node_id, 0.0)
                 _finish_graph_edit(
                     f"Добавлена вершина {node_id}. Не забудьте добавить дуги."
                 )
@@ -1457,7 +1304,7 @@ with tab_graph:
             )
             st.caption(
                 "Связанные дуги будут удалены. Мера исчезнет из именованных "
-                "планов и своего комплекса, фактор среды — из сценариев. "
+                "планов и своего комплекса, фактор среды — из модели. "
                 "Целевой показатель "
                 f"{model.params.target_node} удалить нельзя."
             )
@@ -1475,8 +1322,7 @@ with tab_graph:
                 ]
                 for programs in st.session_state.plan_rows.values():
                     programs.pop(victim, None)
-                for values in st.session_state.scenario_rows.values():
-                    values.pop(victim, None)
+                st.session_state.environment_values.pop(victim, None)
                 _finish_graph_edit(f"Вершина {victim} удалена.")
 
     with st.expander("Сохранить YAML в проект"):
@@ -1543,12 +1389,19 @@ with tab_data:
     st.download_button(
         "Скачать dynamics.csv",
         data=csv_bytes,
-        file_name=f"{plan.name}_{scenario.name}.csv",
+        file_name=f"{plan.name}_dynamics.csv",
         mime="text/csv",
     )
+    export_summary = {
+        key: value
+        for key, value in summary.items()
+        if key not in {"scenario", "scenario_label"}
+    }
     st.download_button(
         "Скачать summary.json",
-        data=json.dumps(summary, ensure_ascii=False, indent=2, default=str).encode("utf-8"),
-        file_name=f"{plan.name}_{scenario.name}_summary.json",
+        data=json.dumps(
+            export_summary, ensure_ascii=False, indent=2, default=str
+        ).encode("utf-8"),
+        file_name=f"{plan.name}_summary.json",
         mime="application/json",
     )
