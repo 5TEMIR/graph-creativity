@@ -101,6 +101,91 @@ def _finish_graph_edit(message: str) -> None:
     st.rerun()
 
 
+CUSTOM_PLAN = "__custom__"
+
+
+def _is_all_measures_plan(plan: Plan) -> bool:
+    return plan.name == "full" or plan.label.strip().casefold() == "все меры"
+
+
+def _editable_plan_names(model) -> list[str]:
+    return [
+        name
+        for name, plan in model.plans.items()
+        if not _is_all_measures_plan(plan)
+    ]
+
+
+def _default_plan_name(model) -> str:
+    names = _editable_plan_names(model)
+    if "hybrid" in names:
+        return "hybrid"
+    return names[0] if names else CUSTOM_PLAN
+
+
+def _initial_custom_programs(model, plan_table: dict) -> dict[str, dict]:
+    default_name = _default_plan_name(model)
+    source_name = default_name if default_name in plan_table else None
+    if source_name is None and "full" in plan_table:
+        source_name = "full"
+    if source_name is None:
+        return {}
+    return {
+        measure: dict(program)
+        for measure, program in plan_table[source_name].items()
+        if measure in model.measure_ids
+    }
+
+
+def _sync_custom_state(model) -> dict[str, dict]:
+    """Согласовать выбранные меры своего комплекса и их расписания."""
+    valid = set(model.measure_ids)
+    programs = st.session_state.get("custom_plan_programs", {})
+    if not isinstance(programs, dict):
+        programs = {}
+    programs = {
+        measure: dict(program)
+        for measure, program in programs.items()
+        if measure in valid and isinstance(program, dict)
+    }
+    if "custom_plan_measures" not in st.session_state:
+        st.session_state.custom_plan_measures = list(programs)
+    selected = [
+        measure
+        for measure in st.session_state.custom_plan_measures
+        if measure in valid
+    ]
+    for measure in selected:
+        programs.setdefault(
+            measure,
+            {"start": 0.0, "duration": None, "intensity": 1.0},
+        )
+    programs = {measure: programs[measure] for measure in selected}
+    st.session_state.custom_plan_programs = programs
+    st.session_state.custom_plan_measures = selected
+    return programs
+
+
+def _build_active_plan(model) -> Plan:
+    name = st.session_state.get("active_plan_name")
+    if name != CUSTOM_PLAN and (
+        name not in model.plans or _is_all_measures_plan(model.plans[name])
+    ):
+        name = _default_plan_name(model)
+        st.session_state.active_plan_name = name
+    if name == CUSTOM_PLAN:
+        programs = {}
+        for measure, data in _sync_custom_state(model).items():
+            duration = data.get("duration")
+            programs[measure] = MeasureProgram(
+                start=float(data.get("start", 0.0)),
+                duration=None if duration is None else float(duration),
+                intensity=float(data.get("intensity", 1.0)),
+            )
+        return Plan(name="custom", label="Свой комплекс мер", programs=programs)
+    return model.plan(name)
+
+
 @st.dialog("Показатель")
 def edit_indicator_dialog(node_id: str, epoch: int) -> None:
     row = _row_by_id(node_id)
@@ -167,13 +252,18 @@ def edit_measure_dialog(
     plan_label: str,
     epoch: int,
     horizon: int,
+    *,
+    custom: bool,
 ) -> None:
     row = _row_by_id(node_id)
     if row is None:
         st.error(f"Вершина {node_id} не найдена.")
         return
 
-    plan_data = st.session_state.plan_rows.setdefault(plan_name, {})
+    if custom:
+        plan_data = st.session_state.setdefault("custom_plan_programs", {})
+    else:
+        plan_data = st.session_state.plan_rows.setdefault(plan_name, {})
     program = plan_data.get(node_id)
     included = isinstance(program, dict)
     start = round(float(program.get("start", 0))) if included else 0
@@ -183,7 +273,7 @@ def edit_measure_dialog(
     duration_value = round(float(duration)) if duration is not None else horizon
 
     with st.form(f"measure_dialog_{node_id}_{plan_name}_{epoch}"):
-        st.caption(f"ID: `{node_id}` · мера M · план: {plan_label}")
+        st.caption(f"ID: `{node_id}` · мера M · комплекс: {plan_label}")
         label = st.text_input("Название", value=str(row.get("label") or ""))
         c_short, c_unit = st.columns(2)
         short = c_short.text_input("Короткое имя", value=str(row.get("short") or ""))
@@ -200,43 +290,54 @@ def edit_measure_dialog(
         )
 
         widget_suffix = f"{node_id}_{plan_name}_{epoch}_{horizon}"
-        include = st.checkbox(
-            f"Входит в план «{plan_label}»",
-            value=included,
-            key=f"measure_include_{widget_suffix}",
-            help="Можно включать и исключать меру для выбранного плана.",
-        )
-        start_value = st.slider(
-            "Начало, мес.",
-            min_value=0,
-            max_value=max(1, horizon),
-            value=min(max(start, 0), max(1, horizon)),
-            step=1,
-            key=f"measure_start_{widget_suffix}",
-        )
-        intensity_value = st.slider(
-            "Интенсивность",
-            min_value=0.0,
-            max_value=1.0,
-            value=min(max(intensity, 0.0), 1.0),
-            step=0.05,
-            key=f"measure_intensity_{widget_suffix}",
-            help="Доля полного объёма меры: 1.0 — полный объём.",
-        )
-        until_end_value = st.checkbox(
-            "Действует до конца периода",
-            value=until_end,
-            key=f"measure_until_end_{widget_suffix}",
-        )
-        duration_input = st.number_input(
-            "Продолжительность, мес.",
-            min_value=1.0,
-            max_value=float(max(1, horizon)),
-            value=float(min(max(duration_value, 1), max(1, horizon))),
-            step=1.0,
-            key=f"measure_duration_{widget_suffix}",
-            help="Не используется, если мера действует до конца периода.",
-        )
+        if included:
+            start_value = st.slider(
+                "Начало, мес.",
+                min_value=0,
+                max_value=max(1, horizon),
+                value=min(max(start, 0), max(1, horizon)),
+                step=1,
+                key=f"measure_start_{widget_suffix}",
+            )
+            intensity_value = st.slider(
+                "Интенсивность",
+                min_value=0.0,
+                max_value=1.0,
+                value=min(max(intensity, 0.0), 1.0),
+                step=0.05,
+                key=f"measure_intensity_{widget_suffix}",
+                help="Доля полного объёма меры: 1.0 — полный объём.",
+            )
+            until_end_value = st.checkbox(
+                "Действует до конца периода",
+                value=until_end,
+                key=f"measure_until_end_{widget_suffix}",
+            )
+            duration_input = st.number_input(
+                "Продолжительность, мес.",
+                min_value=1.0,
+                max_value=float(max(1, horizon)),
+                value=float(min(max(duration_value, 1), max(1, horizon))),
+                step=1.0,
+                key=f"measure_duration_{widget_suffix}",
+                help="Не используется, если мера действует до конца периода.",
+            )
+        else:
+            if custom:
+                st.info(
+                    "Мера не входит в свой комплекс. Отметьте её в списке "
+                    "мер выше, чтобы задать расписание."
+                )
+            else:
+                st.info(
+                    "Мера не входит в этот именованный план. Состав плана "
+                    "фиксирован; для выбора мер используйте «Свой комплекс мер»."
+                )
+            start_value = 0
+            intensity_value = 1.0
+            until_end_value = True
+            duration_input = float(max(1, horizon))
+
         with st.expander("Положение на графе"):
             c_x, c_y = st.columns(2)
             x = c_x.number_input(
@@ -258,16 +359,18 @@ def edit_measure_dialog(
                     "y": float(y),
                 }
             )
-            if include:
+            if included:
                 plan_data[node_id] = {
                     "start": float(start_value),
                     "duration": None if until_end_value else float(duration_input),
                     "intensity": float(intensity_value),
                 }
-            else:
-                plan_data.pop(node_id, None)
-            st.session_state.plan_rows[plan_name] = plan_data
-            _finish_graph_edit(f"Мера {node_id} обновлена для плана «{plan_label}».")
+                if custom:
+                    st.session_state.custom_plan_programs = plan_data
+                else:
+                    st.session_state.plan_rows[plan_name] = plan_data
+            target = "своего комплекса мер" if custom else f"плана «{plan_label}»"
+            _finish_graph_edit(f"Мера {node_id} обновлена для {target}.")
 
 
 @st.dialog("Фактор среды")
@@ -376,11 +479,27 @@ with st.sidebar:
         st.session_state.edge_rows = edge_rows(base_model)
         st.session_state.plan_rows = plan_rows(base_model)
         st.session_state.scenario_rows = scenario_rows(base_model)
+        st.session_state.active_plan_name = _default_plan_name(base_model)
+        st.session_state.custom_plan_programs = _initial_custom_programs(
+            base_model, st.session_state.plan_rows
+        )
+        st.session_state.custom_plan_measures = list(
+            st.session_state.custom_plan_programs
+        )
         st.session_state.last_valid_model = base_model
 
     # Совместимость с сессией, открытой до появления редакторов планов.
     st.session_state.setdefault("plan_rows", plan_rows(base_model))
     st.session_state.setdefault("scenario_rows", scenario_rows(base_model))
+    st.session_state.setdefault("active_plan_name", _default_plan_name(base_model))
+    st.session_state.setdefault(
+        "custom_plan_programs",
+        _initial_custom_programs(base_model, st.session_state.plan_rows),
+    )
+    st.session_state.setdefault(
+        "custom_plan_measures",
+        list(st.session_state.custom_plan_programs),
+    )
 
     try:
         model = build_model(
@@ -407,17 +526,13 @@ with st.sidebar:
             "Редактирование — на вкладке «Граф»."
         )
 
-    st.divider()
-    st.subheader("Сценарий")
-    scenario_name = st.selectbox(
-        "Внешняя среда",
-        list(model.scenarios),
-        format_func=lambda n: model.scenarios[n].label,
+    st.caption(
+        "Активный комплекс мер и отклонения факторов среды настраиваются "
+        "на вкладке «Граф»."
     )
-    scenario = model.scenario(scenario_name)
 
     st.divider()
-    st.subheader("План мероприятий")
+    st.subheader("Параметры расчёта")
     horizon = st.slider(
         "Период моделирования, мес.",
         min_value=12,
@@ -425,79 +540,6 @@ with st.sidebar:
         value=int(model.params.horizon),
         step=1,
     )
-    plan_options = ["__custom__"] + list(model.plans)
-    default_plan = "hybrid" if "hybrid" in model.plans else plan_options[0]
-    plan_key = st.selectbox(
-        "Комплекс мер",
-        plan_options,
-        index=plan_options.index(default_plan),
-        format_func=lambda k: "Свой набор…"
-        if k == "__custom__"
-        else model.plans[k].label,
-    )
-
-    if plan_key == "__custom__":
-        selected = st.multiselect(
-            "Меры",
-            model.measure_ids,
-            default=model.measure_ids[:2],
-            format_func=lambda m: model.node(m).short or m,
-        )
-        # После удаления меры из графа виджет может ещё хранить старый ID.
-        selected = [measure for measure in selected if measure in model.measure_ids]
-        programs: dict[str, MeasureProgram] = {}
-        for measure in selected:
-            short = model.node(measure).short or measure
-            st.markdown(f"**{measure} · {short}**")
-            start = st.slider(
-                f"Старт {measure}, мес.",
-                min_value=0,
-                max_value=horizon,
-                value=0,
-                step=1,
-                key=f"custom_start_{measure}_{horizon}",
-            )
-            intensity = st.slider(
-                f"Интенсивность {measure}",
-                min_value=0.0,
-                max_value=1.0,
-                value=1.0,
-                step=0.05,
-                key=f"custom_intensity_{measure}",
-            )
-            until_end = st.checkbox(
-                f"{measure}: до конца периода",
-                value=True,
-                key=f"custom_until_end_{measure}_{horizon}",
-            )
-            duration = st.number_input(
-                f"Продолжительность {measure}, мес.",
-                min_value=1,
-                max_value=horizon,
-                value=horizon,
-                step=1,
-                disabled=until_end,
-                key=f"custom_duration_{measure}_{horizon}",
-            )
-            programs[measure] = MeasureProgram(
-                start=float(start),
-                duration=None if until_end else float(duration),
-                intensity=float(intensity),
-            )
-        plan = Plan(
-            name="custom",
-            label="Свой набор",
-            programs=programs,
-        )
-    else:
-        plan = model.plan(plan_key)
-        st.caption(
-            "Меры: "
-            + (", ".join(model.node(m).short or m for m in plan.measures) or "нет")
-        )
-
-    st.divider()
-    st.subheader("Параметры расчёта")
     theta = st.slider(
         "Порог θ",
         min_value=0.0,
@@ -581,6 +623,18 @@ $\lambda_i=\ln 10/\tau_i^{rise}$. Меры — ступеньки $u_j(t)$,
 """
         )
 
+# Активный комплекс мер и среда. Сценарий для основного расчёта —
+# номинальный; остальные сценарии остаются для анализа устойчивости.
+_editable_plans = _editable_plan_names(model)
+if st.session_state.get("active_plan_name") not in _editable_plans + [CUSTOM_PLAN]:
+    st.session_state.active_plan_name = _default_plan_name(model)
+_sync_custom_state(model)
+plan = _build_active_plan(model)
+active_scenario_name = (
+    "nominal" if "nominal" in model.scenarios else next(iter(model.scenarios))
+)
+scenario = model.scenario(active_scenario_name)
+
 options = SimOptions(
     horizon=horizon,
     theta=theta,
@@ -604,8 +658,9 @@ st.title("Динамика показателей креативности")
 st.caption(
     "Графовая модель «меры → факторы креативности → среда». "
     f"Конфиг {model.params.version}; θ={theta:g}; "
-    f"бюджет {budget_max:g} млн руб. "
-    "Меняйте план, сценарий и параметры слева — графики пересчитываются."
+    f"бюджет {budget_max:g} млн руб.; среда: {scenario.label}. "
+    "Комплекс мер и вершины меняются на вкладке «Граф», "
+    "параметры расчёта — слева."
 )
 
 target = model.node(summary["target_node"])
@@ -645,11 +700,12 @@ c5.metric(
     help="Сумма путей длины ≤ 2 от мер к X1 — величина из первого столбца §5.",
 )
 c6.metric(
-    "Меры в плане",
+    "Меры в комплексе",
     f"{len(plan.measures)} / {len(model.measure_ids)}"
     if model.measure_ids
     else "—",
-    help=", ".join(model.node(m).short or m for m in plan.measures) or "план без мер",
+    help=", ".join(model.node(m).short or m for m in plan.measures)
+    or "комплекс без мер",
 )
 if not summary["feasible"]:
     st.error(
@@ -700,8 +756,9 @@ with tab_compare:
     st.subheader("Именованные планы")
     st.caption(
         f"Сценарий: {scenario.label}. Собственные старты планов сохранены: "
-        "гибрид запускает m3 с 3-го месяца. Строка выбранного плана "
-        "совпадает с KPI наверху."
+        "гибрид запускает m3 с 3-го месяца. Для именованного активного "
+        "комплекса его строка совпадает с KPI; «Свой комплекс мер» "
+        "считается в KPI отдельно."
     )
     named_table = pd.DataFrame(
         [
@@ -840,7 +897,7 @@ with tab_compare:
                 value = "—"
             row[scenario_row["label"]] = value
         row["Радиус"] = (
-            robustness["radius"] if robustness["radius"] >= 0 else "—"
+            str(robustness["radius"]) if robustness["radius"] >= 0 else "—"
         )
         matrix_rows.append(row)
     st.dataframe(pd.DataFrame(matrix_rows), width="stretch", hide_index=True)
@@ -887,7 +944,7 @@ with tab_compare:
         st.caption("Включите галочку, чтобы прогнать каждый план по всем сценариям.")
 
 with tab_scenarios:
-    st.subheader("Веер сценариев для выбранного плана")
+    st.subheader("Веер сценариев для активного комплекса мер")
     fig, ax = plt.subplots(figsize=(12, 4.8))
     for sc in model.scenarios.values():
         res = simulate(model, plan, sc, options)
@@ -945,6 +1002,35 @@ with tab_graph:
             st.toast(flash, icon="✅")
             st.success(flash)
 
+    st.subheader("Активный комплекс мер")
+    plan_options = _editable_plan_names(model) + [CUSTOM_PLAN]
+    current_plan_name = st.session_state.get("active_plan_name")
+    plan_edit_name = st.selectbox(
+        "Активный комплекс мер",
+        plan_options,
+        index=(
+            plan_options.index(current_plan_name)
+            if current_plan_name in plan_options
+            else 0
+        ),
+        format_func=lambda name: (
+            "Свой комплекс мер"
+            if name == CUSTOM_PLAN
+            else model.plans[name].label
+        ),
+        key="active_plan_name",
+        help="Этот комплекс используется в KPI и на всех вкладках. "
+        "Состав именованных планов фиксирован; для выбора мер выберите "
+        "«Свой комплекс мер».",
+    )
+    st.caption(
+        "Именованные планы сохраняют свой состав: в них можно менять "
+        "только параметры уже включённых мер. «Свой комплекс мер» позволяет "
+        "включать и исключать меры; его состав настраивается в пространстве "
+        "«Меры M»."
+    )
+
+    st.divider()
     st.subheader("Граф: просмотр и редактирование")
     if graph_error:
         st.error("Модель не применена к расчётам:\n\n" + graph_error)
@@ -962,14 +1048,15 @@ with tab_graph:
     )
     st.caption(
         "Толщина дуги — |w|, синий — положительное влияние, красный — отрицательное. "
-        "Зелёная обводка — меры, включённые в текущий план."
+        "Зелёная обводка — меры, включённые в активный комплекс."
     )
 
     st.divider()
     c_reset, c_download = st.columns(2)
     if c_reset.button(
         "Сбросить",
-        help="Вернуть вершины, дуги, планы и сценарии исходного YAML.",
+        help="Вернуть вершины, дуги, именованные планы и сценарии исходного YAML. "
+        "Свой комплекс мер остаётся в текущей сессии.",
     ):
         st.session_state.node_rows = node_rows(base_model)
         st.session_state.edge_rows = edge_rows(base_model)
@@ -1059,165 +1146,132 @@ with tab_graph:
                         edit_indicator_dialog(node_id, epoch)
 
     elif space == "Меры M":
-        plan_names = list(st.session_state.plan_rows)
-        if not plan_names:
-            st.caption("В модели нет именованных планов.")
-        else:
-            plan_labels = {
-                name: (
-                    model.plans[name].label
-                    if name in model.plans
-                    else name
-                )
-                for name in plan_names
-            }
-            default_plan_name = (
-                plan.name if plan.name in plan_names else plan_names[0]
-            )
-            plan_edit_name = st.selectbox(
-                "План для настройки мер",
-                plan_names,
-                index=plan_names.index(default_plan_name),
-                format_func=lambda name: plan_labels.get(name, name),
-                key=f"measure_plan_select_{epoch}",
-                help="Изменения начала, интенсивности и продолжительности "
-                "применяются к выбранному плану.",
+        is_custom = plan_edit_name == CUSTOM_PLAN
+        if is_custom:
+            plan_label = "Свой комплекс мер"
+            plan_data = st.session_state.custom_plan_programs
+            st.multiselect(
+                "Меры в комплексе",
+                model.measure_ids,
+                key="custom_plan_measures",
+                format_func=lambda m: f"{m} · {model.node(m).short or m}",
+                help="Отметьте меры, которые входят в свой комплекс. "
+                "Их расписание задаётся в карточках ниже.",
             )
             st.caption(
-                "Для именованных планов параметры ниже сохраняются в план. "
-                "Расписание «Своего набора» задаётся в боковой панели."
+                "Состав своего комплекса задаётся здесь; параметры включённых "
+                "мер меняются в карточках ниже."
             )
-            if plan.name not in plan_names:
-                st.caption(
-                    "Сейчас в боковой панели выбран «Свой набор»; "
-                    "ниже редактируется именованный план, выбранный в этом поле."
-                )
-            plan_label = plan_labels.get(plan_edit_name, plan_edit_name)
+        else:
+            plan_label = model.plans[plan_edit_name].label
             plan_data = st.session_state.plan_rows.get(plan_edit_name, {})
-            measure_rows = [
-                row
-                for row in node_table
-                if str(row.get("kind", "")) == MEASURE
-            ]
-            if not measure_rows:
-                st.caption("В модели нет мер.")
-            for row in measure_rows:
-                node_id = str(row.get("id", "")).strip()
-                if not node_id:
-                    continue
-                short = str(row.get("short") or row.get("label") or node_id)
-                program = plan_data.get(node_id)
-                with st.container(border=True):
-                    c_text, c_action = st.columns([4, 1])
-                    with c_text:
-                        st.markdown(f"**{node_id} · {short}**")
-                        st.write(str(row.get("label") or ""))
-                        st.caption(
-                            f"Стоимость: {fmt(row.get('cost'), 1)} млн · "
-                            f"ответственный: {row.get('owner') or '—'}"
+            st.caption(
+                "Состав именованного плана фиксирован: добавлять или убирать "
+                "меры нельзя, но параметры включённых мер можно менять."
+            )
+
+        measure_rows = [
+            row
+            for row in node_table
+            if str(row.get("kind", "")) == MEASURE
+        ]
+        if not measure_rows:
+            st.caption("В модели нет мер.")
+        for row in measure_rows:
+            node_id = str(row.get("id", "")).strip()
+            if not node_id:
+                continue
+            short = str(row.get("short") or row.get("label") or node_id)
+            program = plan_data.get(node_id)
+            with st.container(border=True):
+                c_text, c_action = st.columns([4, 1])
+                with c_text:
+                    st.markdown(f"**{node_id} · {short}**")
+                    st.write(str(row.get("label") or ""))
+                    st.caption(
+                        f"Стоимость: {fmt(row.get('cost'), 1)} млн · "
+                        f"ответственный: {row.get('owner') or '—'}"
+                    )
+                    if isinstance(program, dict):
+                        duration = program.get("duration")
+                        duration_text = (
+                            "до конца периода"
+                            if duration is None
+                            else f"{fmt(duration, 0)} мес."
                         )
-                        if isinstance(program, dict):
-                            duration = program.get("duration")
-                            duration_text = (
-                                "до конца периода"
-                                if duration is None
-                                else f"{fmt(duration, 0)} мес."
-                            )
-                            st.caption(
-                                f"В плане «{plan_label}»: старт "
-                                f"{fmt(program.get('start'), 0)} мес. · "
-                                f"интенсивность {fmt(program.get('intensity'))} · "
-                                f"{duration_text}"
-                            )
-                        else:
-                            st.caption(
-                                f"В план «{plan_label}» не входит. "
-                                "Откройте карточку, чтобы включить."
-                            )
-                    with c_action:
-                        if st.button(
-                            "Изменить",
-                            key=f"edit_measure_{plan_edit_name}_{node_id}_{epoch}",
-                        ):
-                            edit_measure_dialog(
-                                node_id,
-                                plan_edit_name,
-                                plan_label,
-                                epoch,
-                                int(horizon),
-                            )
+                        st.caption(
+                            f"В комплексе «{plan_label}»: старт "
+                            f"{fmt(program.get('start'), 0)} мес. · "
+                            f"интенсивность {fmt(program.get('intensity'))} · "
+                            f"{duration_text}"
+                        )
+                    elif is_custom:
+                        st.caption(
+                            "В свой комплекс не входит. Отметьте меру в списке "
+                            "выше, чтобы задать расписание."
+                        )
+                    else:
+                        st.caption(
+                            f"В комплекс «{plan_label}» не входит. "
+                            "Состав именованного плана фиксирован."
+                        )
+                with c_action:
+                    if st.button(
+                        "Изменить",
+                        key=f"edit_measure_{plan_edit_name}_{node_id}_{epoch}",
+                    ):
+                        edit_measure_dialog(
+                            node_id,
+                            plan_edit_name,
+                            plan_label,
+                            epoch,
+                            int(horizon),
+                            custom=is_custom,
+                        )
 
     else:
-        scenario_names = list(st.session_state.scenario_rows)
-        if not scenario_names:
-            st.caption("В модели нет сценариев.")
-        else:
-            scenario_labels = {
-                name: (
-                    model.scenarios[name].label
-                    if name in model.scenarios
-                    else name
-                )
-                for name in scenario_names
-            }
-            default_scenario_name = (
-                scenario.name
-                if scenario.name in scenario_names
-                else scenario_names[0]
-            )
-            scenario_edit_name = st.selectbox(
-                "Сценарий для настройки отклонений",
-                scenario_names,
-                index=scenario_names.index(default_scenario_name),
-                format_func=lambda name: scenario_labels.get(name, name),
-                key=f"environment_scenario_select_{epoch}",
-                help="Отклонение задаётся для выбранного сценария.",
-            )
-            if scenario.name != scenario_edit_name:
-                st.caption(
-                    f"В боковой панели выбран другой сценарий; ниже "
-                    f"редактируются отклонения для «{scenario_labels[scenario_edit_name]}»."
-                )
-            scenario_values = st.session_state.scenario_rows.get(
-                scenario_edit_name, {}
-            )
-            environment_rows = [
-                row
-                for row in node_table
-                if str(row.get("kind", "")) == ENVIRONMENT
-            ]
-            if not environment_rows:
-                st.caption("В модели нет факторов среды.")
-            for row in environment_rows:
-                node_id = str(row.get("id", "")).strip()
-                if not node_id:
-                    continue
-                short = str(row.get("short") or row.get("label") or node_id)
-                deviation = float(scenario_values.get(node_id, 0.0))
-                with st.container(border=True):
-                    c_text, c_action = st.columns([4, 1])
-                    with c_text:
-                        st.markdown(f"**{node_id} · {short}**")
-                        st.write(str(row.get("label") or ""))
-                        st.caption(
-                            f"Отклонение в сценарии "
-                            f"«{scenario_labels[scenario_edit_name]}»: "
-                            f"{deviation:+.2f} · единица: {row.get('unit') or '—'}"
+        scenario_label = model.scenarios[active_scenario_name].label
+        scenario_values = st.session_state.scenario_rows.get(
+            active_scenario_name, {}
+        )
+        st.caption(
+            f"Отклонения задаются для сценария «{scenario_label}». "
+            "Остальные сценарии используются на вкладке «Сценарии» "
+            "и здесь не редактируются."
+        )
+        environment_rows = [
+            row
+            for row in node_table
+            if str(row.get("kind", "")) == ENVIRONMENT
+        ]
+        if not environment_rows:
+            st.caption("В модели нет факторов среды.")
+        for row in environment_rows:
+            node_id = str(row.get("id", "")).strip()
+            if not node_id:
+                continue
+            short = str(row.get("short") or row.get("label") or node_id)
+            deviation = float(scenario_values.get(node_id, 0.0))
+            with st.container(border=True):
+                c_text, c_action = st.columns([4, 1])
+                with c_text:
+                    st.markdown(f"**{node_id} · {short}**")
+                    st.write(str(row.get("label") or ""))
+                    st.caption(
+                        f"Отклонение от номинала: {deviation:+.2f} · "
+                        f"единица: {row.get('unit') or '—'}"
+                    )
+                with c_action:
+                    if st.button(
+                        "Изменить",
+                        key=f"edit_environment_{node_id}_{epoch}",
+                    ):
+                        edit_environment_dialog(
+                            node_id,
+                            active_scenario_name,
+                            scenario_label,
+                            epoch,
                         )
-                    with c_action:
-                        if st.button(
-                            "Изменить",
-                            key=(
-                                f"edit_environment_{scenario_edit_name}_"
-                                f"{node_id}_{epoch}"
-                            ),
-                        ):
-                            edit_environment_dialog(
-                                node_id,
-                                scenario_edit_name,
-                                scenario_labels[scenario_edit_name],
-                                epoch,
-                            )
 
     st.divider()
     st.subheader("Дуги")
@@ -1297,7 +1351,8 @@ with tab_graph:
         elif new_kind == MEASURE:
             st.caption(
                 "Новая мера появится в пространстве «Меры M». Чтобы включить "
-                "её в план, откройте карточку меры и поставьте галочку."
+                "её в свой комплекс, отметьте её в списке мер и задайте "
+                "расписание в карточке."
             )
         else:
             st.caption(
@@ -1401,8 +1456,9 @@ with tab_graph:
                 key=f"delete_node_{epoch}",
             )
             st.caption(
-                "Связанные дуги будут удалены. Мера исчезнет из планов, "
-                "фактор среды — из сценариев. Целевой показатель "
+                "Связанные дуги будут удалены. Мера исчезнет из именованных "
+                "планов и своего комплекса, фактор среды — из сценариев. "
+                "Целевой показатель "
                 f"{model.params.target_node} удалить нельзя."
             )
             if st.button("Удалить вершину", key=f"delete_button_{epoch}"):
