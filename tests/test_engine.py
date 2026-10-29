@@ -24,6 +24,7 @@ from graphcreativity.model import (
     Node,
     Plan,
     Scenario,
+    estimate_plan_cost,
     load_model,
 )
 
@@ -172,6 +173,120 @@ def _tiny_model(
         plans={"P": Plan("P", programs={"m": MeasureProgram(start=0.0)})},
         scenarios={"nominal": Scenario("nominal")},
     )
+
+
+def test_measure_program_continuous_mode_ignores_duration():
+    program = MeasureProgram(start=2.0, end=6.0, duration=1.0)
+    active = [t for t in range(8) if program.value(t, 8) > 0]
+    assert active == [2, 3, 4, 5]
+
+
+def test_measure_program_periodic_mode_is_start_to_start():
+    program = MeasureProgram(
+        start=0.0,
+        end=12.0,
+        duration=2.0,
+        interval=3.0,
+    )
+    active = [t for t in range(13) if program.value(t, 12) > 0]
+    assert active == [0, 1, 3, 4, 6, 7, 9, 10]
+
+
+def test_measure_program_periodic_mode_truncates_at_end():
+    program = MeasureProgram(
+        start=0.0,
+        end=5.0,
+        duration=2.0,
+        interval=3.0,
+    )
+    active = [t for t in range(8) if program.value(t, 8) > 0]
+    assert active == [0, 1, 3, 4]
+
+
+def test_measure_program_overlapping_applications_are_continuous():
+    program = MeasureProgram(
+        start=0.0,
+        end=10.0,
+        duration=4.0,
+        interval=3.0,
+    )
+    active = [t for t in range(12) if program.value(t, 12) > 0]
+    assert active == list(range(10))
+
+
+def test_cost_modes_with_periodic_measure():
+    model = _tiny_model(measure_cost=10.0, budget_max=100.0)
+    plan = Plan(
+        "P",
+        programs={
+            "m": MeasureProgram(
+                start=0.0,
+                end=12.0,
+                duration=1.0,
+                interval=2.0,
+            )
+        },
+    )
+
+    # one_time — один раз за весь план, независимо от числа применений.
+    assert estimate_plan_cost(model, plan, "one_time", 12) == pytest.approx(10.0)
+    # monthly — шесть активных месяцев.
+    assert estimate_plan_cost(model, plan, "monthly", 12) == pytest.approx(60.0)
+    # spread — по одной полной стоимости на каждое из шести применений.
+    assert estimate_plan_cost(model, plan, "spread", 12) == pytest.approx(60.0)
+
+
+def test_periodic_measure_series_and_one_time_cost():
+    model = _tiny_model(measure_cost=10.0, budget_max=100.0)
+    model.plans["P"] = Plan(
+        "P",
+        programs={
+            "m": MeasureProgram(
+                start=0.0,
+                end=6.0,
+                duration=1.0,
+                interval=2.0,
+            )
+        },
+    )
+    result = simulate(model, "P", "nominal")
+
+    assert [int(value) for value in result.measures["m"][:8]] == [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0,
+        0,
+    ]
+    assert result.cost_cum[-1] == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize(("mode", "expected"), [("monthly", 60.0), ("spread", 60.0)])
+def test_periodic_measure_monthly_and_spread_cost_flow(mode, expected):
+    model = _tiny_model(measure_cost=10.0, budget_max=100.0)
+    model.plans["P"] = Plan(
+        "P",
+        programs={
+            "m": MeasureProgram(
+                start=0.0,
+                end=12.0,
+                duration=1.0,
+                interval=2.0,
+            )
+        },
+    )
+    result = simulate(
+        model,
+        "P",
+        "nominal",
+        SimOptions(cost_mode=mode),
+    )
+
+    assert result.cost_cum[-1] == pytest.approx(expected)
+    assert result.feasible is True
 
 
 def test_delay_shifts_response():

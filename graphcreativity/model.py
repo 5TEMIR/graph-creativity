@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -83,17 +84,72 @@ class Edge:
 class MeasureProgram:
     """Расписание одной меры.
 
-    u_j(t) = intensity, если start <= t < end, иначе 0.
-    duration=None означает «до конца периода моделирования».
+    Кампания меры — это полуинтервал ``[start, end)``. Внутри него мера
+    либо работает непрерывно, либо применяется периодически:
+
+    * ``interval`` не задан или равен 0 — мера активна непрерывно до ``end``;
+    * ``interval > 0`` — применения начинаются в ``start``, ``start + interval``,
+      ...; каждое длится ``duration`` месяцев и обрезается по ``end``.
+
+    ``end=None`` означает конец периода моделирования. Если ``interval > 0``,
+    ``duration`` должна быть положительной. ``duration`` не влияет на
+    непрерывный режим.
     """
 
     start: float = 0.0
+    end: float | None = None
     duration: float | None = None
+    interval: float | None = None
     intensity: float = 1.0
 
+    def campaign_end(self, horizon: int) -> float:
+        """Конец кампании; None означает конец горизонта."""
+        return float(horizon + 1) if self.end is None else float(self.end)
+
+    def is_periodic(self) -> bool:
+        return self.interval is not None and self.interval > 0
+
     def value(self, t: float, horizon: int) -> float:
-        end = self.start + self.duration if self.duration is not None else horizon + 1
-        return self.intensity if self.start <= t < end else 0.0
+        end = self.campaign_end(horizon)
+        if t < self.start or t >= end:
+            return 0.0
+        if not self.is_periodic():
+            return self.intensity
+
+        interval = float(self.interval)
+        duration = (
+            float(self.duration)
+            if self.duration is not None
+            else interval
+        )
+        if duration <= 0:
+            return 0.0
+
+        # Проверяем последнее применение, начавшееся не позже t. Если
+        # duration <= interval, более ранние применения уже закончились;
+        # если duration > interval, последнее применение всё ещё активно.
+        cycle = math.floor((t - self.start) / interval + 1e-12)
+        cycle_start = self.start + cycle * interval
+        return self.intensity if t < cycle_start + duration else 0.0
+
+    def active_steps(self, horizon: int, dt: float = 1.0) -> int:
+        """Число шагов сетки [0, horizon), на которых мера активна."""
+        if dt <= 0:
+            raise ValueError("dt должен быть > 0")
+        steps = round(horizon / dt)
+        return sum(
+            1
+            for index in range(steps)
+            if self.value(index * dt, horizon) > 0
+        )
+
+    def spread_duration(self, horizon: int) -> float:
+        """База для равномерного списания стоимости (месяцев)."""
+        if self.is_periodic():
+            duration = self.duration if self.duration is not None else self.interval
+            return max(float(duration), 1e-9)
+        end = min(self.campaign_end(horizon), float(horizon))
+        return max(end - self.start, 1e-9)
 
 
 @dataclass
@@ -205,9 +261,16 @@ def _parse_program(value: Any) -> MeasureProgram:
     if isinstance(value, (int, float)):
         return MeasureProgram(start=float(value))
     if isinstance(value, dict):
+        interval = value.get("interval", value.get("period"))
         return MeasureProgram(
             start=float(value.get("start", 0.0)),
-            duration=None if value.get("duration") is None else float(value["duration"]),
+            end=None if value.get("end") is None else float(value["end"]),
+            duration=(
+                None
+                if value.get("duration") is None
+                else float(value["duration"])
+            ),
+            interval=None if interval is None else float(interval),
             intensity=float(value.get("intensity", 1.0)),
         )
     raise ValueError(f"Не удалось разобрать расписание меры: {value!r}")
@@ -308,10 +371,16 @@ def estimate_plan_cost(
     plan: Plan,
     cost_mode: str | None = None,
     horizon: int | None = None,
+    dt: float | None = None,
 ) -> float:
-    """Стоимость плана в млн руб. с учётом режима списания."""
+    """Стоимость плана в млн руб. с учётом режима списания.
+
+    ``one_time`` списывает стоимость один раз за план; ``monthly`` и
+    ``spread`` считаются по фактически активным шагам сетки.
+    """
     mode = cost_mode or model.params.cost_mode
     horizon = horizon if horizon is not None else model.params.horizon
+    dt = float(dt if dt is not None else model.params.dt)
     total = 0.0
     for measure, program in plan.programs.items():
         node = model.node(measure)
@@ -319,11 +388,14 @@ def estimate_plan_cost(
         if mode == "one_time":
             total += base
         elif mode == "monthly":
-            duration = program.duration if program.duration is not None else horizon
-            total += base * duration
+            total += base * program.active_steps(horizon, dt) * dt
         elif mode == "spread":
-            duration = program.duration if program.duration is not None else horizon
-            total += base * min(duration, horizon) / max(duration, 1e-9)
+            total += (
+                base
+                * program.active_steps(horizon, dt)
+                * dt
+                / program.spread_duration(horizon)
+            )
         else:
             raise ValueError(f"Неизвестный cost_mode={mode!r}")
     return total
@@ -404,11 +476,41 @@ def validate_model(model: Model) -> None:
     # показывается как feasible=False в результате прогона. Иначе
     # редактор графа не позволил бы поднять стоимость меры.
     for plan_name, plan in model.plans.items():
-        for measure in plan.programs:
+        for measure, program in plan.programs.items():
             if measure not in model.nodes:
                 errors.append(f"План {plan_name}: мера {measure!r} не найдена")
-            elif not model.node(measure).is_measure:
+                continue
+            if not model.node(measure).is_measure:
                 errors.append(f"План {plan_name}: {measure!r} не является мерой")
+                continue
+            if program.start < 0:
+                errors.append(
+                    f"План {plan_name}, мера {measure}: начало не может быть < 0"
+                )
+            if program.end is not None and program.end <= program.start:
+                errors.append(
+                    f"План {plan_name}, мера {measure}: конец должен быть "
+                    "позже начала"
+                )
+            if program.interval is not None and program.interval < 0:
+                errors.append(
+                    f"План {plan_name}, мера {measure}: периодичность "
+                    "не может быть отрицательной"
+                )
+            if program.duration is not None and program.duration <= 0:
+                errors.append(
+                    f"План {plan_name}, мера {measure}: длительность "
+                    "должна быть > 0"
+                )
+            if (
+                program.interval is not None
+                and program.interval > 0
+                and program.duration is None
+            ):
+                errors.append(
+                    f"План {plan_name}, мера {measure}: для периодической "
+                    "меры нужно задать длительность"
+                )
 
     for scenario_name, scenario in model.scenarios.items():
         for node_id in scenario.values:

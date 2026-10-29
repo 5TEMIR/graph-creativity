@@ -166,10 +166,21 @@ def _sync_custom_state(model) -> dict[str, dict]:
         if measure in valid
     ]
     for measure in selected:
-        programs.setdefault(
+        program = programs.setdefault(
             measure,
-            {"start": 0.0, "duration": None, "intensity": 1.0},
+            {
+                "start": 0.0,
+                "end": None,
+                "duration": 1.0,
+                "interval": None,
+                "intensity": 1.0,
+            },
         )
+        program.setdefault("start", 0.0)
+        program.setdefault("end", None)
+        program.setdefault("duration", 1.0)
+        program.setdefault("interval", None)
+        program.setdefault("intensity", 1.0)
     programs = {measure: programs[measure] for measure in selected}
     st.session_state.custom_plan_programs = programs
     st.session_state.custom_plan_measures = selected
@@ -186,10 +197,14 @@ def _build_active_plan(model) -> Plan:
     if name == CUSTOM_PLAN:
         programs = {}
         for measure, data in _sync_custom_state(model).items():
+            end = data.get("end")
             duration = data.get("duration")
+            interval = data.get("interval", data.get("period"))
             programs[measure] = MeasureProgram(
                 start=float(data.get("start", 0.0)),
+                end=None if end is None else float(end),
                 duration=None if duration is None else float(duration),
+                interval=None if interval is None else float(interval),
                 intensity=float(data.get("intensity", 1.0)),
             )
         return Plan(name="custom", label="Свой комплекс мер", programs=programs)
@@ -277,10 +292,23 @@ def edit_measure_dialog(
     program = plan_data.get(node_id)
     included = isinstance(program, dict)
     start = round(float(program.get("start", 0))) if included else 0
+    start = min(max(start, 0), max(0, horizon - 1))
+    end_raw = program.get("end") if included else None
+    end = horizon if end_raw is None else round(float(end_raw))
+    end = min(max(end, 1), max(1, horizon))
+    if end <= start:
+        end = min(max(1, horizon), start + 1)
     intensity = float(program.get("intensity", 1.0)) if included else 1.0
     duration = program.get("duration") if included else None
-    until_end = duration is None
-    duration_value = round(float(duration)) if duration is not None else horizon
+    duration_value = round(float(duration)) if duration is not None else 1
+    duration_value = min(max(duration_value, 1), max(1, horizon))
+    interval_raw = (
+        program.get("interval", program.get("period"))
+        if included
+        else None
+    )
+    interval = 0 if interval_raw is None else round(float(interval_raw))
+    interval = min(max(interval, 0), max(1, horizon))
 
     with st.form(f"measure_dialog_{node_id}_{plan_name}_{epoch}"):
         st.caption(f"ID: `{node_id}` · мера M · комплекс: {plan_label}")
@@ -301,13 +329,24 @@ def edit_measure_dialog(
 
         widget_suffix = f"{node_id}_{plan_name}_{epoch}_{horizon}"
         if included:
-            start_value = st.slider(
+            c_start, c_end = st.columns(2)
+            start_value = c_start.slider(
                 "Начало, мес.",
                 min_value=0,
-                max_value=max(1, horizon),
-                value=min(max(start, 0), max(1, horizon)),
+                max_value=max(0, horizon - 1),
+                value=min(max(start, 0), max(0, horizon - 1)),
                 step=1,
                 key=f"measure_start_{widget_suffix}",
+            )
+            end_value = c_end.slider(
+                "Конец, мес.",
+                min_value=1,
+                max_value=max(1, horizon),
+                value=end,
+                step=1,
+                key=f"measure_end_{widget_suffix}",
+                help="Месяц окончания кампании (не включая его): новые "
+                "применения после него не начинаются.",
             )
             intensity_value = st.slider(
                 "Интенсивность",
@@ -318,19 +357,26 @@ def edit_measure_dialog(
                 key=f"measure_intensity_{widget_suffix}",
                 help="Доля полного объёма меры: 1.0 — полный объём.",
             )
-            until_end_value = st.checkbox(
-                "Действует до конца периода",
-                value=until_end,
-                key=f"measure_until_end_{widget_suffix}",
+            c_interval, c_duration = st.columns(2)
+            interval_value = c_interval.number_input(
+                "Периодичность, мес.",
+                min_value=0,
+                max_value=max(1, horizon),
+                value=interval,
+                step=1,
+                key=f"measure_interval_{widget_suffix}",
+                help="0 — мера работает непрерывно до конца; N — новое "
+                "применение каждые N месяцев.",
             )
-            duration_input = st.number_input(
+            duration_input = c_duration.number_input(
                 "Продолжительность, мес.",
                 min_value=1.0,
                 max_value=float(max(1, horizon)),
-                value=float(min(max(duration_value, 1), max(1, horizon))),
+                value=float(duration_value),
                 step=1.0,
                 key=f"measure_duration_{widget_suffix}",
-                help="Не используется, если мера действует до конца периода.",
+                help="Длительность одного применения; используется при "
+                "периодичности > 0.",
             )
         else:
             if custom:
@@ -344,9 +390,10 @@ def edit_measure_dialog(
                     "фиксирован; для выбора мер используйте «Свой комплекс мер»."
                 )
             start_value = 0
+            end_value = max(1, horizon)
             intensity_value = 1.0
-            until_end_value = True
-            duration_input = float(max(1, horizon))
+            interval_value = 0
+            duration_input = 1.0
 
         with st.expander("Положение на графе"):
             c_x, c_y = st.columns(2)
@@ -358,29 +405,42 @@ def edit_measure_dialog(
             )
 
         if st.form_submit_button("Сохранить", type="primary"):
-            row.update(
-                {
-                    "label": label.strip() or node_id,
-                    "short": short.strip() or label.strip() or node_id,
-                    "unit": unit.strip(),
-                    "cost": float(cost),
-                    "owner": owner.strip(),
-                    "x": float(x),
-                    "y": float(y),
-                }
-            )
-            if included:
-                plan_data[node_id] = {
-                    "start": float(start_value),
-                    "duration": None if until_end_value else float(duration_input),
-                    "intensity": float(intensity_value),
-                }
-                if custom:
-                    st.session_state.custom_plan_programs = plan_data
-                else:
-                    st.session_state.plan_rows[plan_name] = plan_data
-            target = "своего комплекса мер" if custom else f"плана «{plan_label}»"
-            _finish_graph_edit(f"Мера {node_id} обновлена для {target}.")
+            if included and end_value <= start_value:
+                st.error("Конец должен быть позже начала.")
+            else:
+                row.update(
+                    {
+                        "label": label.strip() or node_id,
+                        "short": short.strip() or label.strip() or node_id,
+                        "unit": unit.strip(),
+                        "cost": float(cost),
+                        "owner": owner.strip(),
+                        "x": float(x),
+                        "y": float(y),
+                    }
+                )
+                if included:
+                    plan_data[node_id] = {
+                        "start": float(start_value),
+                        "end": float(end_value),
+                        "duration": float(duration_input),
+                        "interval": (
+                            None
+                            if interval_value <= 0
+                            else float(interval_value)
+                        ),
+                        "intensity": float(intensity_value),
+                    }
+                    if custom:
+                        st.session_state.custom_plan_programs = plan_data
+                    else:
+                        st.session_state.plan_rows[plan_name] = plan_data
+                target = (
+                    "своего комплекса мер"
+                    if custom
+                    else f"плана «{plan_label}»"
+                )
+                _finish_graph_edit(f"Мера {node_id} обновлена для {target}.")
 
 
 @st.dialog("Фактор среды")
@@ -1050,17 +1110,30 @@ with tab_graph:
                         f"ответственный: {row.get('owner') or '—'}"
                     )
                     if isinstance(program, dict):
-                        duration = program.get("duration")
-                        duration_text = (
+                        end = program.get("end")
+                        end_text = (
                             "до конца периода"
-                            if duration is None
-                            else f"{fmt(duration, 0)} мес."
+                            if end is None
+                            else f"{fmt(end, 0)} мес."
                         )
+                        interval = program.get(
+                            "interval", program.get("period")
+                        )
+                        duration = program.get("duration")
+                        if interval is not None and float(interval) > 0:
+                            mode_text = (
+                                f"каждые {fmt(interval, 0)} мес."
+                                f" по {fmt(duration, 0)} мес."
+                                if duration is not None
+                                else f"каждые {fmt(interval, 0)} мес."
+                            )
+                        else:
+                            mode_text = "непрерывно"
                         st.caption(
                             f"В комплексе «{plan_label}»: старт "
                             f"{fmt(program.get('start'), 0)} мес. · "
-                            f"интенсивность {fmt(program.get('intensity'))} · "
-                            f"{duration_text}"
+                            f"конец {end_text} · {mode_text} · "
+                            f"интенсивность {fmt(program.get('intensity'))}"
                         )
                     elif is_custom:
                         st.caption(

@@ -224,7 +224,7 @@ def simulate(
     }
 
     # --- проверка бюджета ----------------------------------------------
-    plan_cost = estimate_plan_cost(model, plan, opts.cost_mode, horizon)
+    plan_cost = estimate_plan_cost(model, plan, opts.cost_mode, horizon, dt)
     feasible = plan_cost <= opts.budget_max + 1e-9
 
     result = SimulationResult(
@@ -281,8 +281,12 @@ def simulate(
             elif opts.cost_mode == "monthly":
                 cost_flow[step] += node.cost * program.intensity * dt
             elif opts.cost_mode == "spread":
-                duration = program.duration or horizon
-                cost_flow[step] += node.cost * program.intensity * dt / max(duration, 1e-9)
+                cost_flow[step] += (
+                    node.cost
+                    * program.intensity
+                    * dt
+                    / program.spread_duration(horizon)
+                )
 
         # притоки и обновление состояний
         next_values: dict[str, float] = {}

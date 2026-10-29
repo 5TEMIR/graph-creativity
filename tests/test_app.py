@@ -66,6 +66,11 @@ def test_vertex_spaces_open_measure_and_environment_dialogs():
         field.label == "Продолжительность, мес."
         for field in at.number_input
     )
+    assert any(
+        field.label == "Периодичность, мес."
+        for field in at.number_input
+    )
+    assert any(slider.label == "Конец, мес." for slider in at.slider)
     assert not any(
         checkbox.label.startswith("Входит в план")
         for checkbox in at.checkbox
@@ -160,8 +165,13 @@ def test_custom_plan_exposes_measure_membership_and_schedule_controls():
     assert not at.exception
     assert any(slider.label == "Начало, мес." for slider in at.slider)
     assert any(slider.label == "Интенсивность" for slider in at.slider)
+    assert any(slider.label == "Конец, мес." for slider in at.slider)
     assert any(
         field.label == "Продолжительность, мес."
+        for field in at.number_input
+    )
+    assert any(
+        field.label == "Периодичность, мес."
         for field in at.number_input
     )
 

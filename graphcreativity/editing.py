@@ -98,15 +98,34 @@ def edge_rows(model: Model) -> list[dict[str, Any]]:
     ]
 
 
+def _program_dict(program: MeasureProgram) -> dict[str, Any]:
+    return {
+        "start": program.start,
+        "end": program.end,
+        "duration": program.duration,
+        "interval": program.interval,
+        "intensity": program.intensity,
+    }
+
+
+def _program_yaml_dict(program: MeasureProgram) -> dict[str, Any]:
+    """Компактная запись расписания: необязательные None не выводим."""
+    data: dict[str, Any] = {"start": program.start}
+    if program.end is not None:
+        data["end"] = program.end
+    if program.duration is not None:
+        data["duration"] = program.duration
+    if program.interval is not None:
+        data["interval"] = program.interval
+    data["intensity"] = program.intensity
+    return data
+
+
 def plan_rows(model: Model) -> dict[str, dict[str, dict[str, Any]]]:
     """Расписания мер по планам: план -> мера -> параметры."""
     return {
         name: {
-            measure: {
-                "start": program.start,
-                "duration": program.duration,
-                "intensity": program.intensity,
-            }
+            measure: _program_dict(program)
             for measure, program in plan.programs.items()
         }
         for name, plan in model.plans.items()
@@ -272,22 +291,14 @@ def build_model(
     for name, plan in base.plans.items():
         if plan_table is None:
             source = {
-                measure: {
-                    "start": program.start,
-                    "duration": program.duration,
-                    "intensity": program.intensity,
-                }
+                measure: _program_dict(program)
                 for measure, program in plan.programs.items()
             }
         else:
             source = plan_table.get(
                 name,
                 {
-                    measure: {
-                        "start": program.start,
-                        "duration": program.duration,
-                        "intensity": program.intensity,
-                    }
+                    measure: _program_dict(program)
                     for measure, program in plan.programs.items()
                 },
             )
@@ -298,10 +309,22 @@ def build_model(
                 continue
             if not isinstance(data, dict):
                 continue
+            end = data.get("end")
             duration = data.get("duration")
+            interval = data.get("interval", data.get("period"))
             programs[measure] = MeasureProgram(
                 start=_as_float(data.get("start"), 0.0),
-                duration=None if _is_missing(duration) else _as_float(duration, 0.0),
+                end=None if _is_missing(end) else _as_float(end, 0.0),
+                duration=(
+                    None
+                    if _is_missing(duration)
+                    else _as_float(duration, 0.0)
+                ),
+                interval=(
+                    None
+                    if _is_missing(interval)
+                    else _as_float(interval, 0.0)
+                ),
                 intensity=_as_float(data.get("intensity"), 1.0),
             )
         plans[name] = Plan(name=name, label=plan.label, programs=programs)
@@ -381,11 +404,7 @@ def model_to_dict(model: Model) -> dict[str, Any]:
             name: {
                 "label": plan.label,
                 "measures": {
-                    measure: {
-                        "start": program.start,
-                        "duration": program.duration,
-                        "intensity": program.intensity,
-                    }
+                    measure: _program_yaml_dict(program)
                     for measure, program in plan.programs.items()
                 },
             }

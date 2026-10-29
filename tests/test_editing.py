@@ -61,6 +61,29 @@ def test_save_model_yaml_roundtrip(model, tmp_path):
     assert len(loaded.edges) == len(model.edges)
 
 
+def test_periodic_schedule_roundtrip(model, tmp_path):
+    plans = plan_rows(model)
+    plans["hybrid"]["m1"].update(
+        {
+            "start": 3.0,
+            "end": 21.0,
+            "duration": 2.0,
+            "interval": 4.0,
+            "intensity": 0.8,
+        }
+    )
+    edited = build_model(model, node_rows(model), edge_rows(model), plans)
+    path = save_model_yaml(edited, tmp_path / "periodic.yaml")
+    loaded = load_model(path)
+
+    program = loaded.plans["hybrid"].programs["m1"]
+    assert program.start == pytest.approx(3.0)
+    assert program.end == pytest.approx(21.0)
+    assert program.duration == pytest.approx(2.0)
+    assert program.interval == pytest.approx(4.0)
+    assert program.intensity == pytest.approx(0.8)
+
+
 def test_edit_node_preserves_hidden_fields(model):
     rows = node_rows(model)
     for row in rows:
@@ -97,7 +120,13 @@ def test_model_without_measures_still_simulates(model):
 def test_edit_plan_programs_and_scenario_values(model):
     plans = plan_rows(model)
     plans["hybrid"]["m1"].update(
-        {"start": 6.0, "duration": 12.0, "intensity": 0.5}
+        {
+            "start": 6.0,
+            "end": 24.0,
+            "duration": 2.0,
+            "interval": 3.0,
+            "intensity": 0.5,
+        }
     )
     plans["hybrid"].pop("m3")
 
@@ -115,7 +144,9 @@ def test_edit_plan_programs_and_scenario_values(model):
 
     program = edited.plans["hybrid"].programs["m1"]
     assert program.start == pytest.approx(6.0)
-    assert program.duration == pytest.approx(12.0)
+    assert program.end == pytest.approx(24.0)
+    assert program.duration == pytest.approx(2.0)
+    assert program.interval == pytest.approx(3.0)
     assert program.intensity == pytest.approx(0.5)
     assert "m3" not in edited.plans["hybrid"].programs
     assert edited.scenarios["nominal"].values["Y3"] == pytest.approx(-0.25)
