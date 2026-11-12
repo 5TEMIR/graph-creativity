@@ -343,3 +343,48 @@ def test_summary_fields_consistent(model: Model):
         summary["revenue_T"] / summary["cost_total"]
     )
     assert 0.0 <= summary["x_target_T"] <= model.params.x_max
+
+
+# ---------------------------------------------------------------------------
+# Ретроспективный режим: начальные состояния и ряды среды
+# ---------------------------------------------------------------------------
+
+def test_initial_states_are_applied(model: Model):
+    result = simulate(
+        model,
+        measures=(),
+        options=SimOptions(horizon=12),
+        initial_states={"X1": 0.5},
+    )
+    assert result.states["X1"][0] == pytest.approx(0.5)
+    assert result.states["X1"][-1] < 0.5  # без драйверов затухает
+
+
+def test_environment_series_drives_state(model: Model):
+    horizon = 24
+    steps = horizon + 1
+    series = {env: [0.0] * steps for env in model.environment_ids}
+    series["Y2"] = [1.2] * steps  # гранты -> X4, w=0.40, theta=0.42, задержка 3
+    result = simulate(
+        model,
+        measures=(),
+        options=SimOptions(horizon=horizon),
+        environment_series=series,
+    )
+    assert result.states["X4"][-1] > 0.0
+    assert result.environment["Y2"][0] == pytest.approx(1.2)
+
+
+def test_initial_states_unknown_node_raises(model: Model):
+    with pytest.raises(ValueError, match="initial_states"):
+        simulate(model, measures=(), initial_states={"nope": 1.0})
+
+
+def test_environment_series_wrong_length_raises(model: Model):
+    with pytest.raises(ValueError, match="длина"):
+        simulate(
+            model,
+            measures=(),
+            options=SimOptions(horizon=12),
+            environment_series={"Y2": [1.0]},
+        )

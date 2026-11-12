@@ -14,13 +14,10 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, replace
-from typing import Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 
 from .model import (
-    ENVIRONMENT,
-    INDICATOR,
-    MEASURE,
     MeasureProgram,
     Model,
     Plan,
@@ -45,7 +42,7 @@ class SimOptions:
     revenue_mode: str | None = None
     include_optional: bool = False
 
-    def resolve(self, model: Model) -> "ResolvedParams":
+    def resolve(self, model: Model) -> ResolvedParams:
         p = model.params
         return ResolvedParams(
             horizon=int(self.horizon if self.horizon is not None else p.horizon),
@@ -171,11 +168,18 @@ def simulate(
     *,
     measures: Iterable[str] | None = None,
     starts: dict[str, float] | None = None,
+    initial_states: dict[str, float] | None = None,
+    environment_series: dict[str, list[float]] | None = None,
 ) -> SimulationResult:
     """Прогон одного плана в одном сценарии.
 
     plan может быть именем плана из конфига, объектом Plan или None
     (тогда используется measures/starts).
+
+    ``initial_states`` задаёт нормированное состояние ``x`` на шаге 0
+    (например, исторические данные при ретроспективном прогоне).
+    ``environment_series`` заменяет постоянный сценарий рядами среды
+    длины ``steps``; это нужно для backtest, где ``y`` меняется по годам.
     """
     opts = (options or SimOptions()).resolve(model)
     if opts.dt <= 0:
@@ -199,7 +203,7 @@ def simulate(
 
     horizon = opts.horizon
     dt = opts.dt
-    steps = int(round(horizon / dt)) + 1
+    steps = round(horizon / dt) + 1
     time = [i * dt for i in range(steps)]
 
     indicators = model.indicator_ids
@@ -215,13 +219,35 @@ def simulate(
             measure_series[measure_id] = [0.0] * steps
         else:
             measure_series[measure_id] = [
-                program.value(t, int(math.ceil(horizon))) for t in time
+                program.value(t, math.ceil(horizon)) for t in time
             ]
 
     # --- среда ----------------------------------------------------------
-    environment_series: dict[str, list[float]] = {
-        env_id: [scenario.value(env_id)] * steps for env_id in environment_ids
-    }
+    if environment_series is None:
+        environment_series = {
+            env_id: [scenario.value(env_id)] * steps for env_id in environment_ids
+        }
+    else:
+        unknown = set(environment_series) - set(environment_ids)
+        if unknown:
+            raise ValueError(
+                "environment_series: неизвестные вершины среды "
+                + ", ".join(sorted(unknown))
+            )
+        environment_series = {
+            env_id: (
+                list(environment_series[env_id])
+                if env_id in environment_series
+                else [scenario.value(env_id)] * steps
+            )
+            for env_id in environment_ids
+        }
+        for env_id, values in environment_series.items():
+            if len(values) != steps:
+                raise ValueError(
+                    f"environment_series[{env_id}]: длина {len(values)}, "
+                    f"ожидалось {steps}"
+                )
 
     # --- проверка бюджета ----------------------------------------------
     plan_cost = estimate_plan_cost(model, plan, opts.cost_mode, horizon, dt)
@@ -242,11 +268,23 @@ def simulate(
     if opts.revenue_mode == "rubles":
         result.warnings.append(
             "Рублёвый режим монетизирует только показатели с заданными r_i; "
-            "в текущей калибровке это X7, поэтому k несопоставим между планами."
+            "проверьте, что все денежные выходы модели монетизированы, иначе "
+            "k несопоставим между планами."
         )
 
     # --- начальные состояния -------------------------------------------
     states = {node_id: [0.0] * steps for node_id in indicators}
+    if initial_states:
+        unknown = set(initial_states) - set(indicators)
+        if unknown:
+            raise ValueError(
+                "initial_states: неизвестные вершины "
+                + ", ".join(sorted(unknown))
+            )
+        for node_id, value in initial_states.items():
+            node = model.node(node_id)
+            cap = node.x_max if node.x_max is not None else opts.x_max
+            states[node_id][0] = max(0.0, min(float(cap), float(value)))
     sigma = {node_id: [0.0] * steps for node_id in indicators}
     revenue = [0.0] * steps
     cost_flow = [0.0] * steps
@@ -271,7 +309,7 @@ def simulate(
         # стоимость мер на шаге step
         for measure_id, program in plan.programs.items():
             node = model.node(measure_id)
-            is_active = program.value(time[step], int(math.ceil(horizon))) > 0
+            is_active = program.value(time[step], math.ceil(horizon)) > 0
             if not is_active:
                 continue
             if opts.cost_mode == "one_time":
@@ -294,7 +332,7 @@ def simulate(
             node = model.node(indicator)
             total = 0.0
             for edge in pred.get(indicator, []):
-                delay_steps = int(round(edge.delay / dt))
+                delay_steps = round(edge.delay / dt)
                 total += (
                     edge.w
                     * opts.gain
